@@ -181,18 +181,40 @@ public final class SystemIME {
         return true;
     }
 
-    /** {evdev code, shift flag} for a character, or null when it has no single key. */
+    /**
+     * {evdev code, shift flag} for a character, or null when it has no single key.
+     *
+     * <p>{@code getEvents} prefixes the sequence with the modifier keys the
+     * character needs, so the first DOWN is often Shift itself. Taking that as
+     * the character would send a bare shift tap and nothing else — which is
+     * exactly why uppercase and shifted symbols used to vanish. Skip the
+     * modifiers, remember that a shift appeared, and return the first real key.
+     */
     private int[] charToKey(char ch) {
         KeyEvent[] events = mVirtualKcm.getEvents(new char[]{ch});
         if (events == null) return null;
+        boolean shift = false;
+        int evdev = -1;
         for (KeyEvent e : events) {
             if (e.getAction() != KeyEvent.ACTION_DOWN) continue;
-            int evdev = KeyCodeMapper.getScanCode(e.getKeyCode());
-            if (evdev == -1) continue;
-            boolean shift = (e.getMetaState() & KeyEvent.META_SHIFT_ON) != 0;
-            return new int[]{evdev, shift ? 1 : 0};
+            final int kc = e.getKeyCode();
+            if (kc == KeyEvent.KEYCODE_SHIFT_LEFT || kc == KeyEvent.KEYCODE_SHIFT_RIGHT) {
+                shift = true;
+                continue;
+            }
+            if (kc == KeyEvent.KEYCODE_CTRL_LEFT || kc == KeyEvent.KEYCODE_CTRL_RIGHT
+                    || kc == KeyEvent.KEYCODE_ALT_LEFT || kc == KeyEvent.KEYCODE_ALT_RIGHT
+                    || kc == KeyEvent.KEYCODE_META_LEFT || kc == KeyEvent.KEYCODE_META_RIGHT) {
+                continue;
+            }
+            final int code = KeyCodeMapper.getScanCode(kc);
+            if (code == -1) continue;
+            evdev = code;
+            shift |= (e.getMetaState() & KeyEvent.META_SHIFT_ON) != 0;
+            break;
         }
-        return null;
+        if (evdev == -1) return null;
+        return new int[]{evdev, shift ? 1 : 0};
     }
 
 
