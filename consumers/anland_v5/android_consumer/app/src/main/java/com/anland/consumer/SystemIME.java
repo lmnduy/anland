@@ -46,6 +46,7 @@ public final class SystemIME {
     // evdev keycodes (linux/input-event-codes.h) for the editing keys a soft
     // keyboard emits as key events rather than text.
     private static final int EVDEV_ESC = 1;
+    private static final int EVDEV_LEFTSHIFT = 42;
     private static final int EVDEV_BACKSPACE = 14;
     private static final int EVDEV_TAB = 15;
     private static final int EVDEV_ENTER = 28;
@@ -132,6 +133,93 @@ public final class SystemIME {
         mNative.sendKey(0, evdevCode);
         mNative.sendKey(1, evdevCode);
     }
+
+    // ---------------------------------------------------------------------
+    // ASCII fast path
+    //
+    // Printable ASCII used to travel through the text-input channel, which left
+    // the compositor to rebuild a key press from the character. That
+    // reconstruction drops the shift state, so uppercase arrived lowercase and
+    // shifted symbols arrived as the bare digit ("5" instead of "%", "2"
+    // instead of "@"). Send the evdev key code directly instead, with an
+    // explicit left-shift tap around characters that need it, so case and
+    // symbols come out exactly as a hardware keyboard would produce them.
+    // ---------------------------------------------------------------------
+
+    /** Printable ASCII only; anything else still goes through the text channel. */
+    private static boolean isPlainAscii(String s) {
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c < 0x20 || c > 0x7e) return false;
+        }
+        return !s.isEmpty();
+    }
+
+    /**
+     * Sends {@code s} as individual evdev key taps, inserting a left-shift tap
+     * around the characters that need it. Returns false (having sent nothing)
+     * when some character has no single-key representation, so the caller can
+     * fall back to the text channel.
+     */
+    private boolean sendAsKeyTaps(String s) {
+        final int n = s.length();
+        final int[] codes = new int[n];
+        final boolean[] shifted = new boolean[n];
+        for (int i = 0; i < n; i++) {
+            int[] key = charToKey(s.charAt(i));
+            if (key == null) return false;
+            codes[i] = key[0];
+            shifted[i] = key[1] != 0;
+        }
+        for (int i = 0; i < n; i++) {
+            if (shifted[i]) mNative.sendKey(0, EVDEV_LEFTSHIFT);
+            mNative.sendKey(0, codes[i]);
+            mNative.sendKey(1, codes[i]);
+            if (shifted[i]) mNative.sendKey(1, EVDEV_LEFTSHIFT);
+        }
+        mMirror.append(s);
+        if (mMirror.length() > MIRROR_CAP) {
+            mMirror.delete(0, mMirror.length() - MIRROR_CAP);
+        }
+        return true;
+    }
+
+    /**
+     * {evdev code, shift flag} for a character, or null when it has no single key.
+     *
+     * <p>{@code getEvents} prefixes the sequence with the modifier keys the
+     * character needs, so the first DOWN is often Shift itself. Taking that as
+     * the character sends a bare shift tap and nothing else -- which is why
+     * uppercase and shifted symbols used to vanish. Skip the modifiers, remember
+     * that a shift appeared, and press the first real key.
+     */
+    private int[] charToKey(char ch) {
+        KeyEvent[] events = mVirtualKcm.getEvents(new char[]{ch});
+        if (events == null) return null;
+        boolean shift = false;
+        int evdev = -1;
+        for (KeyEvent e : events) {
+            if (e.getAction() != KeyEvent.ACTION_DOWN) continue;
+            final int kc = e.getKeyCode();
+            if (kc == KeyEvent.KEYCODE_SHIFT_LEFT || kc == KeyEvent.KEYCODE_SHIFT_RIGHT) {
+                shift = true;
+                continue;
+            }
+            if (kc == KeyEvent.KEYCODE_CTRL_LEFT || kc == KeyEvent.KEYCODE_CTRL_RIGHT
+                    || kc == KeyEvent.KEYCODE_ALT_LEFT || kc == KeyEvent.KEYCODE_ALT_RIGHT
+                    || kc == KeyEvent.KEYCODE_META_LEFT || kc == KeyEvent.KEYCODE_META_RIGHT) {
+                continue;
+            }
+            final int code = KeyCodeMapper.getScanCode(kc);
+            if (code == -1) continue;
+            evdev = code;
+            shift |= (e.getMetaState() & KeyEvent.META_SHIFT_ON) != 0;
+            break;
+        }
+        if (evdev == -1) return null;
+        return new int[]{evdev, shift ? 1 : 0};
+    }
+
 
     // Maps soft-keyboard characters to Android key codes so a bar modifier can be
     // combined with them. Shared instance; KeyCharacterMap.getEvents is read-only.
@@ -225,6 +313,10 @@ public final class SystemIME {
                 return true;
             }
             eraseComposing();
+            if (isPlainAscii(s) && sendAsKeyTaps(s)) {
+                composing.setLength(0);
+                return true;
+            }
             sendText(s);
             return true;
         }
@@ -340,7 +432,10 @@ public final class SystemIME {
                 tapKey(EVDEV_BACKSPACE);
             }
             if (prefix < next.length()) {
-                sendText(next.substring(prefix));
+                final String tail = next.substring(prefix);
+                if (!(isPlainAscii(tail) && sendAsKeyTaps(tail))) {
+                    sendText(tail);
+                }
             }
             composing.setLength(0);
             composing.append(next);
