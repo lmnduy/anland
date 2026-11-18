@@ -30,6 +30,22 @@
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
 
 #define PIXEL_FORMAT_RGBA_8888 1
+#define PIXEL_FORMAT_XRGB_8888 2
+
+/* Which format the consumer reports for the screen and its dma-bufs.
+ *
+ * RGBA makes the producer's EGL layer alpha-capable (ABGR8888), so every
+ * frame is composited with blending. When KWin loses a window's opaque region
+ * -- which is what happens when a popup surface appears and disappears -- the
+ * window is then blended instead of copied and the whole window turns
+ * translucent over the wallpaper.
+ *
+ * XRGB keeps the byte layout identical but tells the producer the output has
+ * no alpha channel, so a window can never be composited translucent.
+ */
+#ifndef ANLAND_SCREEN_FORMAT
+#define ANLAND_SCREEN_FORMAT PIXEL_FORMAT_XRGB_8888
+#endif
 #define MAX_COLLECT_BUFS 8
 
 /* Saved JVM reference for event-thread JNI callbacks. Process-global (the JVM is);
@@ -206,7 +222,7 @@ static int collect_dmabufs(struct consumer_state *s)
         s->dmabuf_infos[found].stride = stride * 4;
         s->dmabuf_infos[found].width  = width;
         s->dmabuf_infos[found].height = height;
-        s->dmabuf_infos[found].format = PIXEL_FORMAT_RGBA_8888;
+        s->dmabuf_infos[found].format = ANLAND_SCREEN_FORMAT;
         s->dmabuf_infos[found].modifier = 0;
         s->dmabuf_infos[found].offset = 0;
         LOGI("  buf[%d]: anb=%p fd=%d dup=%d %dx%d stride=%d",
@@ -843,7 +859,7 @@ static int do_connect(struct consumer_state *s)
     }
 
     set_screen_info(s->ctx, s->screen_w, s->screen_h,
-                    PIXEL_FORMAT_RGBA_8888, s->refresh_mhz);
+                    ANLAND_SCREEN_FORMAT, s->refresh_mhz);
     push_dmabufs(s->ctx, s->dmabuf_fds, s->dmabuf_infos, s->buf_count);
 
     /* Register the camera service only when it was initialised (i.e. the user
