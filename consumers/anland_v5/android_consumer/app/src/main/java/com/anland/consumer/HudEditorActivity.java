@@ -42,6 +42,7 @@ public final class HudEditorActivity extends Activity {
     // time (they are mutually exclusive at runtime as well).
     private VirtualKeyboardView mKeyboard;
     private Button mLayerButton;
+    private Button mProfileButton;
     private Button mKeyboardSettingsButton;
     private boolean mKeyboardLayer = false;
 
@@ -107,9 +108,113 @@ public final class HudEditorActivity extends Activity {
                 mKeyboardSettingsButton = mHudOverlay.addToolbarButton(
                         getString(R.string.keyboard_layer_settings),
                         this::showKeyboardSettings);
+                mProfileButton = mHudOverlay.addToolbarButton(
+                        getString(R.string.hud_profiles),
+                        this::showProfilePicker);
                 updateLayerBar();
+                updateProfileButton();
             }
         });
+    }
+
+
+    /** Label on the toolbar button: the active slot's name, so the state is visible. */
+    private void updateProfileButton() {
+        if (mProfileButton == null || mHudOverlay == null) return;
+        com.anland.consumer.hud.HudLayoutProfile profile = mHudOverlay.getProfile();
+        if (profile == null) return;
+        int slot = mHudOverlay.getLayoutSlot();
+        String name = profile.slotNames[slot];
+        if (name == null || name.trim().isEmpty()) {
+            name = getString(R.string.hud_slot_fallback, slot + 1);
+        }
+        mProfileButton.setText(getString(R.string.hud_profile_button, name));
+    }
+
+    /**
+     * Layout picker. Tapping an entry switches the live slot immediately (the
+     * overlay persists the choice), so switching presets costs one tap and no
+     * trip through settings.
+     */
+    private void showProfilePicker() {
+        final com.anland.consumer.hud.HudLayoutProfile profile = mHudOverlay.getProfile();
+        if (profile == null) return;
+        final int current = mHudOverlay.getLayoutSlot();
+        String[] labels = new String[com.anland.consumer.hud.HudLayoutProfile.SLOT_COUNT];
+        for (int i = 0; i < labels.length; i++) {
+            String name = profile.slotNames[i];
+            if (name == null || name.trim().isEmpty()) {
+                name = getString(R.string.hud_slot_fallback, i + 1);
+            }
+            labels[i] = (i == current ? "\u2713 " : "    ") + name;
+        }
+        new android.app.AlertDialog.Builder(this)
+                .setTitle(R.string.hud_profiles)
+                .setItems(labels, (d, which) -> {
+                    mHudOverlay.selectLayoutSlot(which);
+                    mHudOverlay.rebuildActiveLayout();
+                    updateProfileButton();
+                })
+                .setNeutralButton(R.string.hud_profile_rename, (d, w) -> renameCurrentSlot())
+                .setPositiveButton(R.string.hud_profile_save_as, (d, w) -> saveCurrentSlotInto())
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+    }
+
+    /** Rename the slot that is currently live. */
+    private void renameCurrentSlot() {
+        final com.anland.consumer.hud.HudLayoutProfile profile = mHudOverlay.getProfile();
+        if (profile == null) return;
+        final int slot = mHudOverlay.getLayoutSlot();
+        final android.widget.EditText input = new android.widget.EditText(this);
+        String name = profile.slotNames[slot];
+        input.setText(name == null || name.trim().isEmpty()
+                ? getString(R.string.hud_slot_fallback, slot + 1) : name);
+        input.setSingleLine(true);
+        new android.app.AlertDialog.Builder(this)
+                .setTitle(R.string.hud_profile_rename)
+                .setView(input)
+                .setPositiveButton(android.R.string.ok, (d, w) -> {
+                    String text = input.getText() == null ? "" : input.getText().toString().trim();
+                    profile.slotNames[slot] = text;
+                    mHudOverlay.saveProfile();
+                    updateProfileButton();
+                })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
+    }
+
+    /**
+     * Copy the live slot's four layers into another slot. This is the "save my
+     * current setup as a new preset" action; the target keeps its own name and
+     * the live slot is left untouched.
+     */
+    private void saveCurrentSlotInto() {
+        final com.anland.consumer.hud.HudLayoutProfile profile = mHudOverlay.getProfile();
+        if (profile == null) return;
+        final int current = mHudOverlay.getLayoutSlot();
+        String[] labels = new String[com.anland.consumer.hud.HudLayoutProfile.SLOT_COUNT];
+        for (int i = 0; i < labels.length; i++) {
+            String name = profile.slotNames[i];
+            if (name == null || name.trim().isEmpty()) {
+                name = getString(R.string.hud_slot_fallback, i + 1);
+            }
+            labels[i] = name;
+        }
+        new android.app.AlertDialog.Builder(this)
+                .setTitle(R.string.hud_profile_save_to)
+                .setItems(labels, (d, target) -> {
+                    if (target == current) return;
+                    try {
+                        profile.importSlot(profile.exportSlot(current), current, target);
+                    } catch (org.json.JSONException ignored) {
+                        return;
+                    }
+                    mHudOverlay.saveProfile();
+                    updateProfileButton();
+                })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show();
     }
 
     private void updateLayerBar() {

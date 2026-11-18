@@ -26,6 +26,7 @@ public final class HudLayoutProfile {
      * user's own presets ("daily", "game", ...) and every one of them starts
      * empty except the first, which carries the built-in default layout.
      */
+    public static final int SLOT_COUNT = 3;
     public final String[] slotNames = {"Layout 1", "Layout 2", "Layout 3"};
 
     private final HudLayout[][] extraLayouts = {
