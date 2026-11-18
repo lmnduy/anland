@@ -43,6 +43,7 @@ public final class HudEditorActivity extends Activity {
     private VirtualKeyboardView mKeyboard;
     private Button mLayerButton;
     private Button mProfileButton;
+    private Button mSettingsButton;
     private Button mKeyboardSettingsButton;
     private boolean mKeyboardLayer = false;
 
@@ -111,12 +112,22 @@ public final class HudEditorActivity extends Activity {
                 mProfileButton = mHudOverlay.addToolbarButton(
                         getString(R.string.hud_profiles),
                         this::showProfilePicker);
+                // The editor is a standalone activity, so without this there is no
+                // way back to the app's settings once you are inside it.
+                mSettingsButton = mHudOverlay.addToolbarButton(
+                        getString(R.string.hud_open_settings),
+                        this::openAppSettings);
                 updateLayerBar();
                 updateProfileButton();
             }
         });
     }
 
+
+    /** Leave the editor for the app's settings, keeping the edits already saved. */
+    private void openAppSettings() {
+        startActivity(new android.content.Intent(this, SettingsActivity.class));
+    }
 
     /** Label on the toolbar button: the active slot's name, so the state is visible. */
     private void updateProfileButton() {

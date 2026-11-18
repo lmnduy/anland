@@ -395,6 +395,7 @@
     <string name="hud_layout_2">Switch to layout 2</string>
     <string name="hud_layout_3">Switch to layout 3</string>
     <string name="hud_profiles">Layouts</string>
+    <string name="hud_open_settings">Settings</string>
     <string name="hud_profile_button">Layout: %1$s</string>
     <string name="hud_profile_rename">Rename</string>
     <string name="hud_profile_save_as">Save to\u2026</string>
