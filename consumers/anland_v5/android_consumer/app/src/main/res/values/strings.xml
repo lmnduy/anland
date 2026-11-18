@@ -336,6 +336,7 @@
     <string name="hud_width_dp">Width (dp):</string>
     <string name="hud_height_dp">Height (dp):</string>
     <string name="hud_corner_dp">Corner (dp):</string>
+    <string name="hud_shape_circle">Circle</string>
     <string name="hud_opacity_percent">Opacity (%):</string>
     <string name="hud_action_mapping">Action Mapping:</string>
     <string name="hud_main_action">Main Action</string>
