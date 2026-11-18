@@ -514,9 +514,16 @@ public class MainActivity extends Activity
 
         // Only when the path itself is unreachable (EACCES on a parent directory)
         // is root actually required to answer.
+        // "Could not tell" must not be reported as "no socket". Without root the
+        // probe cannot inspect /data/local/tmp (SELinux keeps untrusted_app out of
+        // shell_data_file), and folding that into FALSE made a missing grant look
+        // like a missing daemon: three failed probes closed the window. Assume it
+        // is there and let connect() produce the real answer.
         boolean useRoot = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
                 .getBoolean(KEY_USE_ROOT, true);
-        return useRoot && isSocketFileRoot(path);
+        if (!useRoot) return true;
+        Boolean root = probeSocketRoot(path);
+        return root == null || root;
     }
 
     /**
