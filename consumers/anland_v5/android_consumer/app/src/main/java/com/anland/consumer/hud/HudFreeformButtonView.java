@@ -154,13 +154,27 @@ public final class HudFreeformButtonView extends View {
         mPaint.setColor(mIsPressed ? mModel.activeColor : mModel.bgColor);
         mPaint.setAlpha(Math.round(mModel.opacity * 255));
         float corner = mModel.cornerRadiusDp * density;
-        canvas.drawRoundRect(mBounds, corner, corner, mPaint);
+        // A circle is fitted to the button box: radius from the shorter side, so a
+        // non-square button yields the largest circle that fits without clipping.
+        final boolean circle = mModel.isCircle();
+        final float circleCx = mBounds.centerX();
+        final float circleCy = mBounds.centerY();
+        final float circleR = Math.min(mBounds.width(), mBounds.height()) * 0.5f;
+        if (circle) {
+            canvas.drawCircle(circleCx, circleCy, circleR, mPaint);
+        } else {
+            canvas.drawRoundRect(mBounds, corner, corner, mPaint);
+        }
 
         // Stroke
         mPaint.setStyle(Paint.Style.STROKE);
         mPaint.setStrokeWidth(Math.max(1, Math.round(1.0f * density)));
         mPaint.setColor(0x66FFFFFF);
-        canvas.drawRoundRect(mBounds, corner, corner, mPaint);
+        if (circle) {
+            canvas.drawCircle(circleCx, circleCy, circleR, mPaint);
+        } else {
+            canvas.drawRoundRect(mBounds, corner, corner, mPaint);
+        }
 
         // Text with auto font scaling
         mTextPaint.setColor(mIsPressed ? 0xFF11111B : mModel.textColor);

@@ -47,7 +47,21 @@ public final class HudButton {
     /** Inner padding for WIDGET_GROUP, in dp. */
     public int padDp = 8;
     public int cornerRadiusDp = 8;
+    /**
+     * Corner treatment: {@link #SHAPE_RECT} draws the usual rounded rectangle,
+     * {@link #SHAPE_CIRCLE} draws a true circle fitted to the button box. The
+     * corner radius slider cannot express a circle on large buttons (it stops at
+     * 50dp), so the shape is carried explicitly instead of being inferred.
+     */
+    public static final String SHAPE_RECT = "rect";
+    public static final String SHAPE_CIRCLE = "circle";
+    public String shape = SHAPE_RECT;
     public float opacity = 0.85f;
+
+    /** True when this widget should be drawn as a circle rather than a rounded box. */
+    public boolean isCircle() {
+        return SHAPE_CIRCLE.equals(shape);
+    }
 
     // Styling colors (ARGB hex)
     public int bgColor = 0xE62A2B3D;
@@ -146,6 +160,7 @@ public final class HudButton {
         obj.put("width_dp", widthDp);
         obj.put("height_dp", heightDp);
         obj.put("corner_radius_dp", cornerRadiusDp);
+        obj.put("shape", shape);
         obj.put("opacity", opacity);
         obj.put("bg_color", bgColor);
         obj.put("text_color", textColor);
@@ -205,6 +220,8 @@ public final class HudButton {
         b.widthDp = obj.optInt("width_dp", 64);
         b.heightDp = obj.optInt("height_dp", 40);
         b.cornerRadiusDp = obj.optInt("corner_radius_dp", 8);
+        // Profiles written before the shape field existed are all rectangles.
+        b.shape = SHAPE_CIRCLE.equals(obj.optString("shape", SHAPE_RECT)) ? SHAPE_CIRCLE : SHAPE_RECT;
         b.opacity = (float) obj.optDouble("opacity", 0.85);
         b.bgColor = obj.optInt("bg_color", 0xE62A2B3D);
         b.textColor = obj.optInt("text_color", 0xFFFFFFFF);
@@ -295,6 +312,7 @@ public final class HudButton {
         d.widthDp = this.widthDp;
         d.heightDp = this.heightDp;
         d.cornerRadiusDp = this.cornerRadiusDp;
+        d.shape = this.shape;
         d.opacity = this.opacity;
         d.bgColor = this.bgColor;
         d.textColor = this.textColor;

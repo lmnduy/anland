@@ -83,6 +83,7 @@ public final class HudPropertyInspectorView extends LinearLayout {
     private EditText mHeightInput;
 
     private SeekBar mCornerSeekBar;
+    private Switch mShapeCircle;
     private EditText mCornerInput;
 
     private SeekBar mOpacitySeekBar;
@@ -355,6 +356,19 @@ public final class HudPropertyInspectorView extends LinearLayout {
                 if (mCallback != null) mCallback.onModelChanged(mActiveButton);
             }
         }));
+
+        mShapeCircle = new Switch(getContext());
+        mShapeCircle.setText(R.string.hud_shape_circle);
+        mShapeCircle.setOnCheckedChangeListener((v, checked) -> {
+            if (mIsProgrammaticChange || mActiveButton == null) return;
+            mActiveButton.shape = checked ? HudButton.SHAPE_CIRCLE : HudButton.SHAPE_RECT;
+            // The corner radius is meaningless for a circle; keep the stored value
+            // so toggling back to a rectangle restores what the user had.
+            mCornerSeekBar.setEnabled(!checked);
+            if (mCornerInput != null) mCornerInput.setEnabled(!checked);
+            if (mCallback != null) mCallback.onModelChanged(mActiveButton);
+        });
+        mSizeSection.addView(mShapeCircle);
 
         mCornerSeekBar = new SeekBar(getContext());
         mCornerInput = createExactNumberInput();
@@ -769,6 +783,16 @@ public final class HudPropertyInspectorView extends LinearLayout {
         syncSliderAndInput(mWidthSeekBar, mWidthInput, b.widthDp, SIZE_MIN_DP, sizeMax);
         syncSliderAndInput(mHeightSeekBar, mHeightInput, b.heightDp, SIZE_MIN_DP, sizeMax);
         syncSliderAndInput(mCornerSeekBar, mCornerInput, b.cornerRadiusDp, 0, 50);
+        if (mShapeCircle != null) {
+            mIsProgrammaticChange = true;
+            try {
+                mShapeCircle.setChecked(b.isCircle());
+                mCornerSeekBar.setEnabled(!b.isCircle());
+                mCornerInput.setEnabled(!b.isCircle());
+            } finally {
+                mIsProgrammaticChange = false;
+            }
+        }
         syncSliderAndInput(mOpacitySeekBar, mOpacityInput, Math.round(b.opacity * 100), 10, 100);
 
         // Update the badges with the live values from the model.
