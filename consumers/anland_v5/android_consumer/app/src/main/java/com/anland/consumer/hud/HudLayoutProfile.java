@@ -21,7 +21,13 @@ public final class HudLayoutProfile {
     public HudLayout keyboardPortraitLayout = new HudLayout();
     public HudLayout keyboardLandscapeLayout = new HudLayout();
 
-    // Slot 2 has a built-in default; slot 3 starts empty.
+    /**
+     * User-facing name of each of the three layout slots. Slots are the
+     * user's own presets ("daily", "game", ...) and every one of them starts
+     * empty except the first, which carries the built-in default layout.
+     */
+    public final String[] slotNames = {"Layout 1", "Layout 2", "Layout 3"};
+
     private final HudLayout[][] extraLayouts = {
             {new HudLayout(), new HudLayout(), new HudLayout(), new HudLayout()},
             {new HudLayout(), new HudLayout(), new HudLayout(), new HudLayout()}
@@ -42,11 +48,8 @@ public final class HudLayoutProfile {
     private void initDefaults() {
         portraitLayout = createDefaultPortraitLayout();
         landscapeLayout = createSteamDeckLayout();
-        try {
-            importSlot(new JSONObject(DefaultHudLayout2.JSON), 0, 1);
-        } catch (JSONException e) {
-            throw new IllegalStateException("Invalid built-in HUD layout 2", e);
-        }
+        // Slots 2 and 3 are the user's own presets and start empty; only the
+        // first slot carries the built-in layout.
     }
 
     /**
@@ -427,6 +430,9 @@ public final class HudLayoutProfile {
         obj.put("version", version);
         obj.put("profile_name", profileName);
         obj.put("first_time_notice_shown", firstTimeNoticeShown);
+        org.json.JSONArray names = new org.json.JSONArray();
+        for (String n : slotNames) names.put(n == null ? "" : n);
+        obj.put("slot_names", names);
         obj.put("portrait_layout", portraitLayout.toJSON());
         obj.put("landscape_layout", landscapeLayout.toJSON());
         obj.put("keyboard_portrait_layout", keyboardPortraitLayout.toJSON());
@@ -452,6 +458,13 @@ public final class HudLayoutProfile {
             p.version = obj.optInt("version", 2);
             p.profileName = obj.optString("profile_name", "Niri WM Profile");
             p.firstTimeNoticeShown = obj.optBoolean("first_time_notice_shown", false);
+            org.json.JSONArray names = obj.optJSONArray("slot_names");
+            if (names != null) {
+                for (int i = 0; i < p.slotNames.length && i < names.length(); i++) {
+                    String n = names.optString(i, "");
+                    if (n != null && !n.trim().isEmpty()) p.slotNames[i] = n;
+                }
+            }
             if (obj.has("portrait_layout")) {
                 p.portraitLayout = HudLayout.fromJSON(obj.optJSONObject("portrait_layout"));
             }
