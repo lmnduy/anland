@@ -505,9 +505,32 @@ public class MainActivity extends Activity
     // the bundled helper as root (`su -c "<helper> <path> test"`) and read its
     // exit code instead; otherwise we stat() locally.
     private boolean isSocketFile(String path) {
+        // Try the cheap answer first. /data/local/tmp is 0771 (others may traverse,
+        // not list) and the socket itself is 0777, so an ordinary app can stat it --
+        // going through `su` for that used to turn a missing root grant into a
+        // phantom "socket not found" and closed the window.
+        Boolean local = statSocket(path);
+        if (local != null) return local;
+
+        // Only when the path itself is unreachable (EACCES on a parent directory)
+        // is root actually required to answer.
         boolean useRoot = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
                 .getBoolean(KEY_USE_ROOT, true);
-        return useRoot ? isSocketFileRoot(path) : isSocketFileLocal(path);
+        return useRoot && isSocketFileRoot(path);
+    }
+
+    /**
+     * @return TRUE/FALSE when the stat answered, or NULL when this process is not
+     *         allowed to look (which is the only case that needs root).
+     */
+    private static Boolean statSocket(String path) {
+        try {
+            android.system.StructStat st = android.system.Os.stat(path);
+            return android.system.OsConstants.S_ISSOCK(st.st_mode);
+        } catch (android.system.ErrnoException e) {
+            if (e.errno == android.system.OsConstants.EACCES) return null;
+            return Boolean.FALSE;
+        }
     }
 
     // stat(2) both resolves existence and reports the file type, so a stale
