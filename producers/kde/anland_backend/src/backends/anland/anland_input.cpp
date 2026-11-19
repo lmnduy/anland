@@ -1,3 +1,4 @@
+﻿#include <cstdio>
 /*
     KWin - the KDE window manager
     This file is part of the KDE project.
@@ -170,6 +171,8 @@ void AnlandInputDevice::pointerAxis(PointerAxis axis, qreal delta, qint32 deltaV
 
 void AnlandInputDevice::keyboardKey(quint32 keycode, bool pressed)
 {
+    // DIAG: prove the key reached KWin and with which code.
+    fprintf(stderr, "[anland-key] code=%u pressed=%d\n", keycode, pressed ? 1 : 0);
     Q_EMIT keyChanged(keycode,
                       pressed ? KeyboardKeyState::Pressed : KeyboardKeyState::Released,
                       now(), this);
@@ -341,3 +344,4 @@ void AnlandInputBackend::initialize()
 } // namespace KWin
 
 #include "moc_anland_input.cpp"
+

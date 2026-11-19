@@ -1,0 +1,66 @@
+name: Build kwin (arm64, anland backend)
+
+# Builds the patched kwin .deb on a native arm64 runner, so nothing has to be
+# compiled on the phone. The recipe mirrors producers/kde/Debian13_v5/build.sh:
+# fetch the Debian source, overlay the anland backend, apply kwin.patch, build.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - kwin-ci
+
+jobs:
+  build-kwin:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 150
+    container: debian:trixie
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tooling
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential ca-certificates dpkg-dev devscripts equivs patch git
+          sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/debian.sources
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get build-dep -y kwin
+
+      - name: Fetch kwin source
+        run: |
+          mkdir -p /work
+          cd /work
+          apt-get source kwin
+          ls -d kwin-* | head -1 > /work/treedir
+          echo "source tree: $(cat /work/treedir)"
+
+      - name: Stage anland backend overlay
+        run: |
+          TREE="$(cat /work/treedir)"
+          cd "/work/$TREE"
+          # -aL dereferences the common/ and libdisplay_producer/ symlinks into
+          # real files; without it CMake fails on the missing sources.
+          cp -aL "$GITHUB_WORKSPACE/producers/kde/anland_backend/." .
+          patch --batch -p1 --forward --reject-file=- \
+            < "$GITHUB_WORKSPACE/producers/kde/Debian13_v5/kwin.patch"
+          ls src/backends/anland | head -20
+
+      - name: Build .deb
+        run: |
+          TREE="$(cat /work/treedir)"
+          cd "/work/$TREE"
+          DEB_BUILD_OPTIONS="nocheck parallel=$(nproc)" dpkg-buildpackage -b -uc -us -d
+
+      - name: Collect package
+        run: |
+          ls -l /work/*.deb
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          cp /work/*.deb "$GITHUB_WORKSPACE/out/"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kwin-deb
+          path: out/*.deb
+          if-no-files-found: error
