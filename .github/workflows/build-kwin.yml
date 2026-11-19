@@ -47,6 +47,24 @@ jobs:
             < "$GITHUB_WORKSPACE/producers/kde/Debian13_v5/kwin.patch"
           ls src/backends/anland | head -20
 
+      - name: Add Xwayland key diagnostic
+        run: |
+          TREE="$(cat /work/treedir)"
+          python3 - "$TREE/src/xwayland/xwayland.cpp" <<'PYEOF'
+          import sys
+          p = sys.argv[1]
+          s = open(p).read()
+          anchor = "    bool keyboardKey(KWin::KeyboardKeyEvent *event) override\n    {\n"
+          assert s.count(anchor) == 1, "anchor count %d" % s.count(anchor)
+          log = ('        fprintf(stderr, "[anland-xwl] key=%d scan=%u state=%d\\n",\n'
+                 '                int(event->key), event->nativeScanCode, int(event->state));\n')
+          s = s.replace(anchor, anchor + log, 1)
+          if "#include <cstdio>" not in s:
+              s = "#include <cstdio>\n" + s
+          open(p, "w").write(s)
+          print("patched xwayland.cpp")
+          PYEOF
+
       - name: Build .deb
         run: |
           TREE="$(cat /work/treedir)"
