@@ -50,7 +50,7 @@ jobs:
       - name: Add Xwayland key diagnostic
         run: |
           TREE="$(cat /work/treedir)"
-          python3 - "$TREE/src/xwayland/xwayland.cpp" <<'PYEOF'
+          python3 - "/work/$TREE/src/xwayland/xwayland.cpp" <<'PYEOF'
           import sys
           p = sys.argv[1]
           s = open(p).read()
