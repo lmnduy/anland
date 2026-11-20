@@ -94,10 +94,35 @@ public final class HudFreeformButtonView extends View {
         if (editMode) stopRepeat();
     }
 
+    /** A key widget reports the real press and the real release instead of a
+     *  synthetic tap, so holding the button holds the key down. Taps are
+     *  stretched to a minimum length downstream in HudOverlayView. */
+    private boolean reportsPressState() {
+        return mModel != null && mModel.action != null
+                && HudAction.TYPE_KEY.equals(mModel.action.type)
+                && !mModel.sendOnRelease;
+    }
+
     private void sendPrimaryTap() {
         if (mListener == null) return;
+        // Key widgets drive press/release from the touch gesture (see
+        // reportsPressState); emitting a tap here as well would close the key
+        // immediately and make holding impossible.
+        if (reportsPressState()) return;
         mListener.onButtonPress(mModel, true);
         mListener.onButtonPress(mModel, false);
+    }
+
+    private void sendKeyDown() {
+        if (mListener != null && reportsPressState()) {
+            mListener.onButtonPress(mModel, true);
+        }
+    }
+
+    private void sendKeyUp() {
+        if (mListener != null && reportsPressState()) {
+            mListener.onButtonPress(mModel, false);
+        }
     }
 
     @Override
@@ -154,20 +179,27 @@ public final class HudFreeformButtonView extends View {
         mPaint.setColor(mIsPressed ? mModel.activeColor : mModel.bgColor);
         mPaint.setAlpha(Math.round(mModel.opacity * 255));
         float corner = mModel.cornerRadiusDp * density;
-        // Circle: radius from the shorter side, so a non-square button still fits.
+        // A circle is fitted to the button box: radius from the shorter side, so a
+        // non-square button yields the largest circle that fits without clipping.
         final boolean circle = mModel.isCircle();
         final float circleCx = mBounds.centerX();
         final float circleCy = mBounds.centerY();
         final float circleR = Math.min(mBounds.width(), mBounds.height()) * 0.5f;
-        if (circle) canvas.drawCircle(circleCx, circleCy, circleR, mPaint);
-        else canvas.drawRoundRect(mBounds, corner, corner, mPaint);
+        if (circle) {
+            canvas.drawCircle(circleCx, circleCy, circleR, mPaint);
+        } else {
+            canvas.drawRoundRect(mBounds, corner, corner, mPaint);
+        }
 
         // Stroke
         mPaint.setStyle(Paint.Style.STROKE);
         mPaint.setStrokeWidth(Math.max(1, Math.round(1.0f * density)));
         mPaint.setColor(0x66FFFFFF);
-        if (circle) canvas.drawCircle(circleCx, circleCy, circleR, mPaint);
-        else canvas.drawRoundRect(mBounds, corner, corner, mPaint);
+        if (circle) {
+            canvas.drawCircle(circleCx, circleCy, circleR, mPaint);
+        } else {
+            canvas.drawRoundRect(mBounds, corner, corner, mPaint);
+        }
 
         // Text with auto font scaling
         mTextPaint.setColor(mIsPressed ? 0xFF11111B : mModel.textColor);
@@ -215,6 +247,7 @@ public final class HudFreeformButtonView extends View {
                             Math.min(HudButton.LONG_PRESS_MAX_MS, mModel.longPressMs)));
                 }
                 mPress.down(mModel.sendOnRelease, this::sendPrimaryTap);
+                sendKeyDown();
                 startRepeat();
                 return true;
 
@@ -243,6 +276,8 @@ public final class HudFreeformButtonView extends View {
                 stopRepeat();
                 dropLongPress();
                 invalidate();
+                // Key widgets release here: this is what makes holding work.
+                sendKeyUp();
                 if (mLongPressFired) {
                     mLongPressFired = false;
                     return true;   // the hold already did its job

@@ -13,6 +13,7 @@ import android.graphics.Insets;
 import android.graphics.Paint;
 import android.graphics.RectF;
 import android.graphics.Typeface;
+import android.os.SystemClock;
 import android.view.DisplayCutout;
 import android.view.Gravity;
 import android.view.MotionEvent;
@@ -156,6 +157,60 @@ public final class HudOverlayView extends FrameLayout implements IModifierProvid
     }
     private final Map<Integer, ModState> mModifiers = new LinkedHashMap<>();
 
+    // ---- Key press and hold -----------------------------------------------
+    // A tap used to emit key-down and key-up back to back, so every press lasted
+    // zero milliseconds. Games poll the key state once per frame (~16 ms) and
+    // never observed it, and holding a key was impossible by construction.
+    // Keep the key down until the finger lifts, and stretch short taps to
+    // MIN_KEY_HOLD_MS so at least one frame always sees the pressed state.
+    private static final long MIN_KEY_HOLD_MS = 90;
+    private int mHeldKeyCode = -1;
+    private long mHeldKeyDownAt;
+    private Runnable mPendingKeyUp;
+
+    private void handleKeyHold(int code, boolean isDown) {
+        if (mHost == null) return;
+        if (isDown) {
+            // A second down for the key that is already held only extends the
+            // current press (auto-repeat style), it does not stack up.
+            if (mPendingKeyUp != null) {
+                removeCallbacks(mPendingKeyUp);
+                mPendingKeyUp = null;
+            }
+            if (mHeldKeyCode == code) return;
+            if (mHeldKeyCode != -1) releaseHeldKeyNow();
+            mHeldKeyCode = code;
+            mHeldKeyDownAt = SystemClock.uptimeMillis();
+            mHost.sendKey(0, code);
+            return;
+        }
+        if (mHeldKeyCode != code) return;
+        long held = SystemClock.uptimeMillis() - mHeldKeyDownAt;
+        long remaining = MIN_KEY_HOLD_MS - held;
+        if (remaining <= 0) {
+            releaseHeldKeyNow();
+            return;
+        }
+        // Deferred release: the finger is already up, but the game needs the
+        // pressed state to survive at least one frame.
+        final int heldCode = mHeldKeyCode;
+        mPendingKeyUp = () -> {
+            if (mHeldKeyCode == heldCode) releaseHeldKeyNow();
+        };
+        postDelayed(mPendingKeyUp, remaining);
+    }
+
+    private void releaseHeldKeyNow() {
+        if (mPendingKeyUp != null) {
+            removeCallbacks(mPendingKeyUp);
+            mPendingKeyUp = null;
+        }
+        if (mHeldKeyCode == -1) return;
+        int code = mHeldKeyCode;
+        mHeldKeyCode = -1;
+        if (mHost != null) mHost.sendKey(1, code);
+    }
+
     /**
      * Action dispatch shared by plain key widgets and by the keys inside a
      * group container, so a child key behaves exactly like a free key.
@@ -168,7 +223,7 @@ public final class HudOverlayView extends FrameLayout implements IModifierProvid
             if (HudAction.TYPE_MODIFIER.equals(btn.action.type)) {
                 if (isDown) toggleModifier(btn.action.code);
             } else if (HudAction.TYPE_KEY.equals(btn.action.type)) {
-                if (mHost != null && btn.action.code > 0) mHost.sendKey(isDown ? 0 : 1, btn.action.code);
+                if (btn.action.code > 0) handleKeyHold(btn.action.code, isDown);
             } else if (isDown) {
                 dispatchHudAction(btn.action);
             }
@@ -487,21 +542,6 @@ public final class HudOverlayView extends FrameLayout implements IModifierProvid
         mPrefs.edit().putInt(PREF_KEY_LAYOUT_SLOT, slot).apply();
         rebuildActiveLayout();
         invalidate();
-    }
-
-    /** Switch the live layout slot (0..2); used by the editor's layout picker. */
-    public void selectLayoutSlot(int slot) {
-        switchLayoutSlot(slot);
-    }
-
-    /** Slot currently shown, 0..2. */
-    public int getLayoutSlot() {
-        return mLayoutSlot;
-    }
-
-    /** The loaded profile, so the picker can read and rename the slot labels. */
-    public HudLayoutProfile getProfile() {
-        return mProfile;
     }
 
     public static int getSystemStatusBarHeight(Context ctx) {
