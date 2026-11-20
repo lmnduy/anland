@@ -67,6 +67,14 @@ jobs:
               open(cm, "w").write(s)
               print("cmake: +xcb-xtest")
 
+          # the filter lives in KWinXwaylandServerModule, a separate link target
+          xm = os.path.join(tree, "src/xwayland/CMakeLists.txt")
+          s2 = open(xm).read()
+          if "xcb-xtest" not in s2:
+              s2 += "\ntarget_link_libraries(KWinXwaylandServerModule PRIVATE xcb-xtest)\n"
+              open(xm, "w").write(s2)
+              print("xwayland cmake: +xcb-xtest")
+
           # 2) deliver X11-client keys through XTEST instead of the Wayland seat
           p = os.path.join(tree, "src/xwayland/xwayland.cpp")
           s = open(p).read()
