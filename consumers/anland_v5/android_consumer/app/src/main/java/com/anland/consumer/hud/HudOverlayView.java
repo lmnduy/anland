@@ -544,6 +544,21 @@ public final class HudOverlayView extends FrameLayout implements IModifierProvid
         invalidate();
     }
 
+    /** Switch the live layout slot (0..2); used by the editor's layout picker. */
+    public void selectLayoutSlot(int slot) {
+        switchLayoutSlot(slot);
+    }
+
+    /** Slot currently shown, 0..2. */
+    public int getLayoutSlot() {
+        return mLayoutSlot;
+    }
+
+    /** The loaded profile, so the picker can read and rename the slot labels. */
+    public HudLayoutProfile getProfile() {
+        return mProfile;
+    }
+
     public static int getSystemStatusBarHeight(Context ctx) {
         int resId = ctx.getResources().getIdentifier("status_bar_height", "dimen", "android");
         int res = (resId > 0) ? ctx.getResources().getDimensionPixelSize(resId) : 0;
