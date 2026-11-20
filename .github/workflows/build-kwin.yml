@@ -55,15 +55,17 @@ jobs:
           import sys, os
           tree = sys.argv[1]
 
-          # 1) link libxcb-xtest so xcb_test_fake_input resolves
+          # 1) link libxcb-xtest so xcb_test_fake_input resolves.
+          # ECM's FindXCB does not expose an XCB::XTEST target (Debian trixie),
+          # so link the library by name instead.
           cm = os.path.join(tree, "src/CMakeLists.txt")
           s = open(cm).read()
           anchor_cm = "            XCB::SYNC\n            XCB::XCB\n"
           assert s.count(anchor_cm) == 1, "cmake anchor %d" % s.count(anchor_cm)
-          if "XCB::XTEST" not in s:
-              s = s.replace(anchor_cm, "            XCB::SYNC\n            XCB::XCB\n            XCB::XTEST\n", 1)
+          if "xcb-xtest" not in s:
+              s = s.replace(anchor_cm, "            XCB::SYNC\n            XCB::XCB\n            xcb-xtest\n", 1)
               open(cm, "w").write(s)
-              print("cmake: +XCB::XTEST")
+              print("cmake: +xcb-xtest")
 
           # 2) deliver X11-client keys through XTEST instead of the Wayland seat
           p = os.path.join(tree, "src/xwayland/xwayland.cpp")
