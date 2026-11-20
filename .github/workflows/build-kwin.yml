@@ -75,28 +75,32 @@ jobs:
               open(xm, "w").write(s2)
               print("xwayland cmake: +xcb-xtest")
 
-          # 2) deliver X11-client keys through XTEST instead of the Wayland seat
+          # 2) deliver X11-client keys through XTEST, at the very top of the
+          #    handler: the eavesdropping filter below returns early for keys it
+          #    does not care about, so anything placed after it never sees the
+          #    HUD's synthetic keys.
           p = os.path.join(tree, "src/xwayland/xwayland.cpp")
           s = open(p).read()
           old = (
-              "        if (surface) {\n"
-              "            ClientConnection *client = surface->client();\n"
-              "            if (xwaylandClient == client) {\n"
-              "                return false;\n"
-              "            }\n"
+              "        if (event->state == KeyboardKeyState::Repeated) {\n"
+              "            return false;\n"
               "        }\n"
           )
           new = (
-              "        if (surface) {\n"
-              "            ClientConnection *client = surface->client();\n"
-              "            if (xwaylandClient == client) {\n"
-              "                fprintf(stderr, \"[anland-xwl] key=%d scan=%u state=%d\\n\",\n"
-              "                        int(event->key), event->nativeScanCode, int(event->state));\n"
-              "                // An X11 client has focus. Deliver through the X server's\n"
-              "                // XTEST extension instead of the Wayland seat: once a game\n"
-              "                // grabs input it reads raw/XInput2 device events, which\n"
-              "                // seat-synthesised keys do not produce -- the same reason\n"
-              "                // xdotool works where the HUD does not.\n"
+              "        if (event->state == KeyboardKeyState::Repeated) {\n"
+              "            return false;\n"
+              "        }\n"
+              "\n"
+              "        // DIAG\n"
+              "        fprintf(stderr, \"[anland-xwl] key=%d scan=%u state=%d\\n\",\n"
+              "                int(event->key), event->nativeScanCode, int(event->state));\n"
+              "        // If an X11 client has keyboard focus, deliver the key through the\n"
+              "        // X server's XTEST extension instead of the Wayland seat. Games that\n"
+              "        // grab input read raw/XInput2 device events; seat-synthesised keys\n"
+              "        // are not part of that stream, which is why xdotool works where the\n"
+              "        // HUD did not.\n"
+              "        if (SurfaceInterface *focused = waylandServer()->seat()->keyboard()->focusedSurface()) {\n"
+              "            if (focused->client() == xwaylandClient) {\n"
               "                if (xcb_connection_t *conn = kwinApp()->x11Connection()) {\n"
               "                    const xcb_keycode_t kc = event->nativeScanCode + 8;\n"
               "                    const uint8_t xtype = event->state == KeyboardKeyState::Pressed\n"
@@ -105,7 +109,6 @@ jobs:
               "                    xcb_flush(conn);\n"
               "                    return true;\n"
               "                }\n"
-              "                return false;\n"
               "            }\n"
               "        }\n"
           )
