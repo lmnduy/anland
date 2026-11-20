@@ -47,22 +47,70 @@ jobs:
             < "$GITHUB_WORKSPACE/producers/kde/Debian13_v5/kwin.patch"
           ls src/backends/anland | head -20
 
-      - name: Add Xwayland key diagnostic
+      - name: Patch Xwayland key delivery (XTEST)
         run: |
           TREE="$(cat /work/treedir)"
-          python3 - "/work/$TREE/src/xwayland/xwayland.cpp" <<'PYEOF'
-          import sys
-          p = sys.argv[1]
+          python3 - "/work/$TREE" <<'PYEOF'
+          import sys, os
+          tree = sys.argv[1]
+
+          # 1) link libxcb-xtest so xcb_test_fake_input resolves
+          cm = os.path.join(tree, "src/CMakeLists.txt")
+          s = open(cm).read()
+          anchor_cm = "            XCB::SYNC\n            XCB::XCB\n"
+          assert s.count(anchor_cm) == 1, "cmake anchor %d" % s.count(anchor_cm)
+          if "XCB::XTEST" not in s:
+              s = s.replace(anchor_cm, "            XCB::SYNC\n            XCB::XCB\n            XCB::XTEST\n", 1)
+              open(cm, "w").write(s)
+              print("cmake: +XCB::XTEST")
+
+          # 2) deliver X11-client keys through XTEST instead of the Wayland seat
+          p = os.path.join(tree, "src/xwayland/xwayland.cpp")
           s = open(p).read()
-          anchor = "    bool keyboardKey(KWin::KeyboardKeyEvent *event) override\n    {\n"
-          assert s.count(anchor) == 1, "anchor count %d" % s.count(anchor)
-          log = ('        fprintf(stderr, "[anland-xwl] key=%d scan=%u state=%d\\n",\n'
-                 '                int(event->key), event->nativeScanCode, int(event->state));\n')
-          s = s.replace(anchor, anchor + log, 1)
+          old = (
+              "        if (surface) {\n"
+              "            ClientConnection *client = surface->client();\n"
+              "            if (xwaylandClient == client) {\n"
+              "                return false;\n"
+              "            }\n"
+              "        }\n"
+          )
+          new = (
+              "        if (surface) {\n"
+              "            ClientConnection *client = surface->client();\n"
+              "            if (xwaylandClient == client) {\n"
+              "                fprintf(stderr, \"[anland-xwl] key=%d scan=%u state=%d\\n\",\n"
+              "                        int(event->key), event->nativeScanCode, int(event->state));\n"
+              "                // An X11 client has focus. Deliver through the X server's\n"
+              "                // XTEST extension instead of the Wayland seat: once a game\n"
+              "                // grabs input it reads raw/XInput2 device events, which\n"
+              "                // seat-synthesised keys do not produce -- the same reason\n"
+              "                // xdotool works where the HUD does not.\n"
+              "                if (xcb_connection_t *conn = kwinApp()->x11Connection()) {\n"
+              "                    const xcb_keycode_t kc = event->nativeScanCode + 8;\n"
+              "                    const uint8_t xtype = event->state == KeyboardKeyState::Pressed\n"
+              "                        ? XCB_KEY_PRESS : XCB_KEY_RELEASE;\n"
+              "                    xcb_test_fake_input(conn, xtype, kc, XCB_CURRENT_TIME, XCB_NONE, 0, 0, 0);\n"
+              "                    xcb_flush(conn);\n"
+              "                    return true;\n"
+              "                }\n"
+              "                return false;\n"
+              "            }\n"
+              "        }\n"
+          )
+          assert s.count(old) == 1, "xwayland anchor %d" % s.count(old)
+          s = s.replace(old, new, 1)
+          if "#include <xcb/xtest.h>" not in s:
+              s = s.replace('#include "xwayland.h"\n',
+                            '#include "xwayland.h"\n\n#include <xcb/xtest.h>\n', 1)
+          if '#include "main.h"' not in s:
+              s = s.replace('#include "main_wayland.h"\n',
+                            '#include "main.h"\n#include "main_wayland.h"\n', 1)
           if "#include <cstdio>" not in s:
-              s = "#include <cstdio>\n" + s
+              s = s.replace('#include <QAbstractEventDispatcher>\n',
+                            '#include <cstdio>\n\n#include <QAbstractEventDispatcher>\n', 1)
           open(p, "w").write(s)
-          print("patched xwayland.cpp")
+          print("xwayland.cpp: XTEST delivery patched")
           PYEOF
 
       - name: Build .deb
