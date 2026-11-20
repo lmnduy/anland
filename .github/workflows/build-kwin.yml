@@ -23,7 +23,8 @@ jobs:
         run: |
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-            build-essential ca-certificates dpkg-dev devscripts equivs patch git
+            build-essential ca-certificates dpkg-dev devscripts equivs patch git \
+            libxcb-xtest0-dev
           sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/debian.sources
           apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get build-dep -y kwin
