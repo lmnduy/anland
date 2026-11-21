@@ -172,15 +172,17 @@ void AnlandInputDevice::pointerAxis(PointerAxis axis, qreal delta, qint32 deltaV
     Q_EMIT InputDevice::pointerFrame(this);
 }
 
-// The touch UI reports a press and a release almost simultaneously, and while a
-// button is held it keeps repeating that pair every few dozen milliseconds. A
-// game polls the key state per frame, so it needs the key to stay down between
-// those repeats and it expects the auto-repeat a real keyboard produces.
-// Emit Pressed at once, keep emitting Pressed every REPEAT_MS while repeats keep
-// coming, and emit Released only when nothing arrives for TAP_WINDOW_MS, i.e.
-// the finger really left the button.
-static constexpr qint64 TAP_WINDOW_MS = 60;
-static constexpr qint64 REPEAT_MS = 50;
+// The touch UI sends a press and a release almost simultaneously, and while a
+// button is held it keeps repeating that pair. A real keyboard behaves very
+// differently: one key-down the instant the key goes down, then (if the key is
+// still down a moment later) the system's own auto-repeat, and finally one
+// key-up when the key is released. KWin already implements that auto-repeat for
+// held keys, so all this device has to do is keep the key logically down while
+// the UI keeps reporting it, and release it when the reports stop.
+//
+// TAP_WINDOW_MS is only the window used to tell a tap from a hold. It is not a
+// repeat rate: the repeat cadence comes from KWin's keyboard configuration.
+static constexpr qint64 TAP_WINDOW_MS = 50;
 
 namespace {
 struct KeyHoldState {
@@ -199,14 +201,17 @@ void AnlandInputDevice::keyboardKey(quint32 keycode, bool pressed)
     state.lastEventAt = nowMs;
 
     if (pressed) {
+        // One key-down, immediately. Further presses while the key is already
+        // down are the UI re-reporting the held button, not new keystrokes.
         if (!state.down) {
             state.down = true;
             Q_EMIT keyChanged(keycode, KeyboardKeyState::Pressed, now(), this);
-            scheduleRepeat(keycode, nowMs);
         }
         return;
     }
 
+    // A release only ends the key when nothing else arrives inside the window;
+    // otherwise the button is still held and KWin keeps repeating the key.
     QTimer::singleShot(int(TAP_WINDOW_MS), this, [this, keycode]() {
         auto it = s_holds.find(keycode);
         if (it == s_holds.end() || !it->down) {
@@ -214,25 +219,11 @@ void AnlandInputDevice::keyboardKey(quint32 keycode, bool pressed)
         }
         const qint64 now = QDateTime::currentMSecsSinceEpoch();
         if (now - it->lastEventAt < TAP_WINDOW_MS) {
-            return; // a repeat arrived: the key is still held
+            return; // still held
         }
         it->down = false;
         Q_EMIT keyChanged(keycode, KeyboardKeyState::Released, now, this);
-    });
-}
-
-void AnlandInputDevice::scheduleRepeat(quint32 keycode, qint64 referenceMs)
-{
-    QTimer::singleShot(int(REPEAT_MS), this, [this, keycode, referenceMs]() {
-        auto it = s_holds.find(keycode);
-        if (it == s_holds.end() || !it->down) {
-            return;
-        }
-        if (it->lastEventAt <= referenceMs) {
-            return; // nothing new: the key is up
-        }
-        Q_EMIT keyChanged(keycode, KeyboardKeyState::Pressed, now(), this);
-        scheduleRepeat(keycode, it->lastEventAt);
+        fprintf(stderr, "[anland-key] code=%u released after hold\n", keycode);
     });
 }
 
