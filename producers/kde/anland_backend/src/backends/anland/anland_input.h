@@ -50,6 +50,7 @@ public:
     void pointerButton(quint32 button, bool pressed);
     void pointerAxis(PointerAxis axis, qreal delta, qint32 deltaV120);
     void keyboardKey(quint32 keycode, bool pressed);
+    void scheduleRepeat(quint32 keycode, qint64 referenceMs);
     void touchDown(qint32 id, const QPointF &position);
     void touchMotion(qint32 id, const QPointF &position);
     void touchUp(qint32 id);
