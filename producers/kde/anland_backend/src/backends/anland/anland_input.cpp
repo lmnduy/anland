@@ -217,12 +217,14 @@ void AnlandInputDevice::keyboardKey(quint32 keycode, bool pressed)
         if (it == s_holds.end() || !it->down) {
             return;
         }
-        const qint64 now = QDateTime::currentMSecsSinceEpoch();
-        if (now - it->lastEventAt < TAP_WINDOW_MS) {
+        // NOTE: do not name this local `now` -- that shadows the member
+        // function now() and breaks the timestamp argument below.
+        const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+        if (nowMs - it->lastEventAt < TAP_WINDOW_MS) {
             return; // still held
         }
         it->down = false;
-        Q_EMIT keyChanged(keycode, KeyboardKeyState::Released, now, this);
+        Q_EMIT keyChanged(keycode, KeyboardKeyState::Released, now(), this);
         fprintf(stderr, "[anland-key] code=%u released after hold\n", keycode);
     });
 }
