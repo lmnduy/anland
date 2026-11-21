@@ -182,7 +182,11 @@ void AnlandInputDevice::pointerAxis(PointerAxis axis, qreal delta, qint32 deltaV
 //
 // TAP_WINDOW_MS is only the window used to tell a tap from a hold. It is not a
 // repeat rate: the repeat cadence comes from KWin's keyboard configuration.
-static constexpr qint64 TAP_WINDOW_MS = 50;
+// The touch UI re-reports a held button every ~62 ms (measured), so this
+// window must sit above that interval or every repeat looks like a fresh tap
+// and the key is cut into ~60 ms bursts. It stays well below a human double
+// tap (~200 ms), so two separate taps still produce two presses.
+static constexpr qint64 TAP_WINDOW_MS = 120;
 
 namespace {
 struct KeyHoldState {
