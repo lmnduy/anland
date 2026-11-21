@@ -6,6 +6,9 @@
     SPDX-License-Identifier: GPL-2.0-or-later
 */
 #include "anland_input.h"
+#include <QDateTime>
+#include <QHash>
+#include <QTimer>
 #include "anland_backend.h"
 
 #include <chrono>
@@ -169,13 +172,38 @@ void AnlandInputDevice::pointerAxis(PointerAxis axis, qreal delta, qint32 deltaV
     Q_EMIT InputDevice::pointerFrame(this);
 }
 
+// A tap arrives as key-down immediately followed by key-up: measured press and
+// release carried the identical microsecond timestamp. Games poll the key state
+// once per frame and never sample a zero-length press, so holding a key is
+// impossible from the touch UI. Keep the key logically pressed for at least
+// MIN_KEY_HOLD_MS so a frame always sees it; a real hold passes through.
+static constexpr qint64 MIN_KEY_HOLD_MS = 90;
+
 void AnlandInputDevice::keyboardKey(quint32 keycode, bool pressed)
 {
-    // DIAG: prove the key reached KWin and with which code.
+    static QHash<quint32, qint64> s_pressAt;
+
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
     fprintf(stderr, "[anland-key] code=%u pressed=%d\n", keycode, pressed ? 1 : 0);
-    Q_EMIT keyChanged(keycode,
-                      pressed ? KeyboardKeyState::Pressed : KeyboardKeyState::Released,
-                      now(), this);
+
+    if (pressed) {
+        s_pressAt.insert(keycode, nowMs);
+        Q_EMIT keyChanged(keycode, KeyboardKeyState::Pressed, now(), this);
+        return;
+    }
+
+    const qint64 downAt = s_pressAt.value(keycode, 0);
+    s_pressAt.remove(keycode);
+    const qint64 elapsed = downAt > 0 ? nowMs - downAt : MIN_KEY_HOLD_MS;
+    if (downAt > 0 && elapsed < MIN_KEY_HOLD_MS) {
+        const quint32 code = keycode;
+        QTimer::singleShot(int(MIN_KEY_HOLD_MS - elapsed), this, [this, code]() {
+            fprintf(stderr, "[anland-key] code=%u pressed=0 (deferred)\n", code);
+            Q_EMIT keyChanged(code, KeyboardKeyState::Released, now(), this);
+        });
+        return;
+    }
+    Q_EMIT keyChanged(keycode, KeyboardKeyState::Released, now(), this);
 }
 
 void AnlandInputDevice::touchDown(qint32 id, const QPointF &position)
