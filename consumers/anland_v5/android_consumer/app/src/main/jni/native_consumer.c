@@ -44,7 +44,7 @@
  * no alpha channel, so a window can never be composited translucent.
  */
 #ifndef ANLAND_SCREEN_FORMAT
-#define ANLAND_SCREEN_FORMAT PIXEL_FORMAT_XRGB_8888
+#define ANLAND_SCREEN_FORMAT PIXEL_FORMAT_RGBA_8888
 #endif
 #define MAX_COLLECT_BUFS 8
 
