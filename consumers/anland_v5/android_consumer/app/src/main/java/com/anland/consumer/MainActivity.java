@@ -83,11 +83,11 @@ public class MainActivity extends Activity
     // this guards that one-time init (see applyCameraState).
     private boolean cameraInited = false;
     private static final String DEFAULT_SOCKET_PATH = "/data/local/tmp/display_daemon.sock";
-    // Optional uinput bridge socket (see the native uinput_send): the daemon in
-    // the container listens on the one directory the container and Android
-    // share. Empty disables it and keeps the producer's own input channel.
+    // Optional uinput bridge (see the native uinput_send): "tcp:PORT" of the
+    // daemon inside the container (net_mode=host shares loopback), or a unix
+    // path. Empty disables it and keeps the producer's own input channel.
     static final String KEY_INPUT_SOCKET = "input_socket";
-    static final String DEFAULT_INPUT_SOCKET = "/data/local/Droidspaces/Logs/anland-input.sock";
+    static final String DEFAULT_INPUT_SOCKET = "tcp:47321";
     // Multi-instance launch parameters. A secondary window is started with these
     // Intent extras (see SecondaryActivity / SettingsActivity); the launcher icon
     // starts MainActivity with none, i.e. the default socket and window name "anland".

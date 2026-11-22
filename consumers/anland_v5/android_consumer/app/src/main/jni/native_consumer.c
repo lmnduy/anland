@@ -12,6 +12,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <sys/wait.h>
@@ -553,10 +555,32 @@ static int recv_fd_via_root_helper(const char *daemon_sock,
  * Returns true when the event was written (the legacy channel must then stay
  * silent, otherwise the producer would inject it a second time).
  */
-static int uinput_connect(const char *path, const char *helper, const char *bridge)
+static int uinput_connect(const char *spec, const char *helper, const char *bridge)
 {
-    if (path[0] == '\0')
+    if (spec[0] == '\0')
         return -1;
+
+    /* The container runs with net_mode=host, so loopback is shared with Android
+     * and a TCP socket needs no root, no bind mount and no SELinux label games.
+     * "tcp:PORT" is the normal form; a unix path is kept for tests. */
+    if (strncmp(spec, "tcp:", 4) == 0) {
+        int port = atoi(spec + 4);
+        if (port <= 0 || port > 65535)
+            return -1;
+        int fd = socket(AF_INET, SOCK_STREAM, 0);
+        if (fd < 0)
+            return -1;
+        struct sockaddr_in addr;
+        memset(&addr, 0, sizeof(addr));
+        addr.sin_family = AF_INET;
+        addr.sin_port = htons((uint16_t)port);
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+            close(fd);
+            return -1;
+        }
+        return fd;
+    }
 
     char bridge_in[600];
     snprintf(bridge_in, sizeof(bridge_in), "%s.in", bridge);
