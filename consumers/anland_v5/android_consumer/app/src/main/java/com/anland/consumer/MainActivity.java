@@ -2424,6 +2424,13 @@ public class MainActivity extends Activity
     // Floating mode: the soft keyboard overlays the display, so the surface
     // keeps its full size (target 0). Default mode: shrink it above the IME.
     private void relayout() {
+        // A configuration change can land before the surface view exists (the
+        // activity is still starting) or after it was detached, and
+        // getLayoutParams() is null until the root has laid it out once. Neither
+        // is a reason to take the whole window down with an NPE.
+        if (surfaceView == null
+                || !(surfaceView.getLayoutParams() instanceof FrameLayout.LayoutParams))
+            return;
         int target = mKeyboardFloating ? 0 : mImeBottom;
 
         FrameLayout.LayoutParams lp =

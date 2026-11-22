@@ -163,52 +163,56 @@ public final class HudOverlayView extends FrameLayout implements IModifierProvid
     // never observed it, and holding a key was impossible by construction.
     // Keep the key down until the finger lifts, and stretch short taps to
     // MIN_KEY_HOLD_MS so at least one frame always sees the pressed state.
+    //
+    // One entry per key, not one slot: games need several HUD keys down at the
+    // same time (forward + jump, strafe + sprint), so pressing a second button
+    // must never release the first.
     private static final long MIN_KEY_HOLD_MS = 90;
-    private int mHeldKeyCode = -1;
-    private long mHeldKeyDownAt;
-    private Runnable mPendingKeyUp;
+    private final Map<Integer, Long> mHeldKeys = new LinkedHashMap<>();
+    private final Map<Integer, Runnable> mPendingKeyUps = new LinkedHashMap<>();
 
     private void handleKeyHold(int code, boolean isDown) {
         if (mHost == null) return;
         if (isDown) {
-            // A second down for the key that is already held only extends the
+            // A second down for a key that is already held only extends the
             // current press (auto-repeat style), it does not stack up.
-            if (mPendingKeyUp != null) {
-                removeCallbacks(mPendingKeyUp);
-                mPendingKeyUp = null;
-            }
-            if (mHeldKeyCode == code) return;
-            if (mHeldKeyCode != -1) releaseHeldKeyNow();
-            mHeldKeyCode = code;
-            mHeldKeyDownAt = SystemClock.uptimeMillis();
+            Runnable pending = mPendingKeyUps.remove(code);
+            if (pending != null) removeCallbacks(pending);
+            if (mHeldKeys.containsKey(code)) return;
+            mHeldKeys.put(code, SystemClock.uptimeMillis());
             mHost.sendKey(0, code);
             return;
         }
-        if (mHeldKeyCode != code) return;
-        long held = SystemClock.uptimeMillis() - mHeldKeyDownAt;
+        Long downAt = mHeldKeys.get(code);
+        if (downAt == null) return;
+        long held = SystemClock.uptimeMillis() - downAt;
         long remaining = MIN_KEY_HOLD_MS - held;
         if (remaining <= 0) {
-            releaseHeldKeyNow();
+            releaseHeldKey(code);
             return;
         }
         // Deferred release: the finger is already up, but the game needs the
         // pressed state to survive at least one frame.
-        final int heldCode = mHeldKeyCode;
-        mPendingKeyUp = () -> {
-            if (mHeldKeyCode == heldCode) releaseHeldKeyNow();
-        };
-        postDelayed(mPendingKeyUp, remaining);
+        Runnable up = () -> releaseHeldKey(code);
+        mPendingKeyUps.put(code, up);
+        postDelayed(up, remaining);
     }
 
-    private void releaseHeldKeyNow() {
-        if (mPendingKeyUp != null) {
-            removeCallbacks(mPendingKeyUp);
-            mPendingKeyUp = null;
-        }
-        if (mHeldKeyCode == -1) return;
-        int code = mHeldKeyCode;
-        mHeldKeyCode = -1;
+    /** Releases one held key (idempotent: a key that is not down is ignored). */
+    private void releaseHeldKey(int code) {
+        Runnable pending = mPendingKeyUps.remove(code);
+        if (pending != null) removeCallbacks(pending);
+        if (mHeldKeys.remove(code) == null) return;
         if (mHost != null) mHost.sendKey(1, code);
+    }
+
+    /** Releases every key this overlay still holds, e.g. when it is torn down. */
+    private void releaseAllHeldKeys() {
+        for (Integer code : new ArrayList<>(mHeldKeys.keySet()))
+            releaseHeldKey(code);
+        for (Runnable pending : new ArrayList<>(mPendingKeyUps.values()))
+            removeCallbacks(pending);
+        mPendingKeyUps.clear();
     }
 
     /**
@@ -473,6 +477,9 @@ public final class HudOverlayView extends FrameLayout implements IModifierProvid
             mHasUnsavedChanges = false;
             setVisibility(VISIBLE);
             updateToolbarMargins();
+            // The editor rebuilds every widget, so a key still held by a finger
+            // would lose its view and never get its release.
+            releaseAllHeldKeys();
         }
         if (editMode && !mProfile.firstTimeNoticeShown) {
             showFirstTimeNoticeDialog();
@@ -1271,6 +1278,9 @@ public final class HudOverlayView extends FrameLayout implements IModifierProvid
             m.active = false;
             m.locked = false;
         }
+        // Nothing may stay latched down when the overlay is told to reset: a key
+        // held by a finger that will never report its release would stick.
+        releaseAllHeldKeys();
     }
 
     private void toggleModifier(int evdev) {
