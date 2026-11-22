@@ -163,6 +163,10 @@ public class MainActivity extends Activity
     // Pointer ids of the grabbed evdev stream that belong to the HUD or the
     // floating keyboard rather than to the desktop.
     private final java.util.HashSet<Integer> grabbedOverlayPointers = new java.util.HashSet<>();
+    // Pointer ids of the ordinary window stream that a HUD control (or the
+    // floating keyboard) owns, so the other fingers keep driving the desktop.
+    // See the root's dispatchWindowTouchEvent.
+    private final java.util.HashSet<Integer> hudControlPointers = new java.util.HashSet<>();
     // Cached "immersive_hud_touch" preference: read once per session instead of
     // once per evdev frame.
     private boolean immersiveHudTouch = ImmersiveMode.DEFAULT_HUD_TOUCH;
@@ -785,7 +789,7 @@ public class MainActivity extends Activity
             @Override
             public boolean dispatchTouchEvent(MotionEvent event) {
                 if (!containsTabletPointer(event))
-                    return super.dispatchTouchEvent(event);
+                    return dispatchWindowTouchEvent(event);
 
                 // HUD children otherwise receive stylus DOWN first and can
                 // turn it into a mouse click. Route the pen at the window edge,
@@ -806,6 +810,106 @@ public class MainActivity extends Activity
                 } finally {
                     fingers.recycle();
                 }
+            }
+
+            /**
+             * Ordinary window touches, with the HUD and the desktop owning
+             * separate pointers.
+             *
+             * <p>Android gives an entire gesture to the one view that accepted
+             * its DOWN, so a thumb resting on a HUD key used to swallow every
+             * later pointer: the other thumb's swipe was delivered to the key,
+             * which has no use for it, and the desktop never saw it. Ownership
+             * is decided per pointer where it lands and then kept for the rest
+             * of that pointer's life, so each side gets a well-formed stream of
+             * its own pointers and neither can disturb the other.
+             */
+            private boolean dispatchWindowTouchEvent(MotionEvent event) {
+                // Mice click, they do not rest on a key; and the HUD editor owns
+                // the whole screen while it is open. Both keep the old path.
+                if (!event.isFromSource(InputDevice.SOURCE_TOUCHSCREEN)
+                        || mHudOverlay == null || mHudOverlay.isEditMode()) {
+                    hudControlPointers.clear();
+                    return super.dispatchTouchEvent(event);
+                }
+                if (touchscreenGrabbed) {
+                    // The grabbed stream owns the panel (and serves the HUD
+                    // through routeGrabbedTouch); anything still arriving here
+                    // is a tail queued before EVIOCGRAB.
+                    hudControlPointers.clear();
+                    return true;
+                }
+                final int action = event.getActionMasked();
+                if (action == MotionEvent.ACTION_CANCEL) {
+                    hudControlPointers.clear();
+                    // Both sides were mid-gesture: the hierarchy gets the
+                    // original cancel, the desktop its own.
+                    routeDesktopTouch(event);
+                    return super.dispatchTouchEvent(event);
+                }
+                switch (action) {
+                    case MotionEvent.ACTION_DOWN:
+                    case MotionEvent.ACTION_POINTER_DOWN:
+                    case MotionEvent.ACTION_MOVE:
+                    case MotionEvent.ACTION_UP:
+                    case MotionEvent.ACTION_POINTER_UP:
+                        break;
+                    default:
+                        hudControlPointers.clear();
+                        return super.dispatchTouchEvent(event);
+                }
+
+                final int index = event.getActionIndex();
+                final int pointerId = event.getPointerId(index);
+                final boolean down = action == MotionEvent.ACTION_DOWN
+                        || action == MotionEvent.ACTION_POINTER_DOWN;
+                if (down) {
+                    if (!isTabletTool(event.getToolType(index))
+                            && isOverlayControlAt(event.getX(index), event.getY(index)))
+                        hudControlPointers.add(pointerId);
+                    else
+                        hudControlPointers.remove(pointerId);
+                }
+
+                // The hierarchy side, split out when the frame also carries
+                // desktop pointers.
+                if (anyHudControlPointer(event)) {
+                    final MotionEvent frame = anyNonControlPointer(event)
+                            ? splitHudPointers(event, true) : event;
+                    boolean handled = false;
+                    if (frame != null) {
+                        try {
+                            handled = super.dispatchTouchEvent(frame);
+                        } finally {
+                            if (frame != event) frame.recycle();
+                        }
+                    }
+                    // Nothing under the finger took the pointer (the HUD was
+                    // rebuilt or hid between the hit test and the dispatch):
+                    // hand it to the desktop instead of swallowing it.
+                    if (down && !handled && frame != null)
+                        hudControlPointers.remove(pointerId);
+                }
+
+                // The desktop side, routed exactly like Activity.onTouchEvent
+                // routes a finger: the on-screen touchpad or direct touch. This
+                // is what makes the swipe a one-contact gesture again while a
+                // key stays held, instead of looking like a two-finger scroll.
+                if (anyNonControlPointer(event)) {
+                    final MotionEvent frame = anyHudControlPointer(event)
+                            ? splitHudPointers(event, false) : event;
+                    if (frame != null) {
+                        try {
+                            routeDesktopTouch(frame);
+                        } finally {
+                            if (frame != event) frame.recycle();
+                        }
+                    }
+                }
+
+                if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_POINTER_UP)
+                    hudControlPointers.remove(pointerId);
+                return true;
             }
 
             @Override
@@ -2543,12 +2647,7 @@ public class MainActivity extends Activity
             // Setting off: the grabbed stream belongs to the desktop alone,
             // exactly like it did before the HUD could be reached here.
             grabbedOverlayPointers.clear();
-            if (isTouchpadMode) {
-                updateTouchpadBounds(null);
-                dispatchTouchpadWithoutTablet(ev);
-            } else {
-                handleTouchEvent(ev);
-            }
+            routeDesktopTouch(ev);
             return;
         }
         final int action = ev.getActionMasked();
@@ -2587,12 +2686,7 @@ public class MainActivity extends Activity
             MotionEvent desktop = anyOverlayPointer(ev) ? splitGrabbedEvent(ev, false) : ev;
             if (desktop != null) {
                 try {
-                    if (isTouchpadMode) {
-                        updateTouchpadBounds(null);
-                        dispatchTouchpadWithoutTablet(desktop);
-                    } else {
-                        handleTouchEvent(desktop);
-                    }
+                    routeDesktopTouch(desktop);
                 } finally {
                     if (desktop != ev) desktop.recycle();
                 }
@@ -2605,6 +2699,22 @@ public class MainActivity extends Activity
             grabbedOverlayPointers.remove(pointerId);
     }
 
+    /**
+     * Hands a frame's remaining pointers to the desktop: the on-screen touchpad
+     * when touchpad mode is on, direct touch otherwise. This is the non-mouse
+     * half of {@link #onTouchEvent}, shared by every router that splits a stream
+     * (grabbed evdev and ordinary window), so a split stream behaves exactly
+     * like an unsplit one.
+     */
+    private void routeDesktopTouch(MotionEvent ev) {
+        if (isTouchpadMode) {
+            updateTouchpadBounds(null);
+            dispatchTouchpadWithoutTablet(ev);
+        } else {
+            handleTouchEvent(ev);
+        }
+    }
+
     private boolean anyOverlayPointer(MotionEvent ev) {
         for (int i = 0; i < ev.getPointerCount(); i++)
             if (grabbedOverlayPointers.contains(ev.getPointerId(i))) return true;
@@ -2614,6 +2724,20 @@ public class MainActivity extends Activity
     private boolean anyDesktopPointer(MotionEvent ev) {
         for (int i = 0; i < ev.getPointerCount(); i++)
             if (!grabbedOverlayPointers.contains(ev.getPointerId(i))) return true;
+        return false;
+    }
+
+    /** True when this window frame still carries a pointer a HUD control owns. */
+    private boolean anyHudControlPointer(MotionEvent ev) {
+        for (int i = 0; i < ev.getPointerCount(); i++)
+            if (hudControlPointers.contains(ev.getPointerId(i))) return true;
+        return false;
+    }
+
+    /** True when this window frame carries a pointer that belongs to the desktop. */
+    private boolean anyNonControlPointer(MotionEvent ev) {
+        for (int i = 0; i < ev.getPointerCount(); i++)
+            if (!hudControlPointers.contains(ev.getPointerId(i))) return true;
         return false;
     }
 
@@ -2691,6 +2815,97 @@ public class MainActivity extends Activity
                 props, coords, src.getMetaState(), src.getButtonState(),
                 src.getXPrecision(), src.getYPrecision(), src.getDeviceId(),
                 src.getEdgeFlags(), src.getSource(), src.getFlags());
+    }
+
+    /**
+     * Copies the ordinary window stream's pointers that one side owns into a
+     * well-formed frame for that side: the HUD/keyboard side when
+     * {@code overlay} is true, the desktop side otherwise. Batched samples are
+     * kept, so a fast swipe loses no intermediate positions.
+     *
+     * <p>Returns null when this side has no pointer in the frame, and also when
+     * the frame's action belongs to a pointer of the other side: this side never
+     * learnt about that pointer, so telling it that a pointer changed would
+     * corrupt its bookkeeping (Android's view hierarchy above all, which tracks
+     * one touch target per pointer id).
+     */
+    private MotionEvent splitHudPointers(MotionEvent source, boolean overlay) {
+        final int pointerCount = source.getPointerCount();
+        final int[] keep = new int[pointerCount];
+        int count = 0;
+        for (int i = 0; i < pointerCount; i++) {
+            if (hudControlPointers.contains(source.getPointerId(i)) == overlay)
+                keep[count++] = i;
+        }
+        if (count == 0)
+            return null;
+
+        final int action = source.getActionMasked();
+        final int sourceIndex = source.getActionIndex();
+        int newActionIndex = -1;
+        for (int i = 0; i < count; i++) {
+            if (keep[i] == sourceIndex) { newActionIndex = i; break; }
+        }
+
+        // A side's first pointer starts that side's gesture with DOWN whatever
+        // the other side was doing, so the two streams stay independent.
+        final int sideAction;
+        switch (action) {
+            case MotionEvent.ACTION_DOWN:
+            case MotionEvent.ACTION_POINTER_DOWN:
+                if (newActionIndex < 0) return null;
+                sideAction = count == 1 ? MotionEvent.ACTION_DOWN
+                        : MotionEvent.ACTION_POINTER_DOWN
+                                | (newActionIndex << MotionEvent.ACTION_POINTER_INDEX_SHIFT);
+                break;
+            case MotionEvent.ACTION_UP:
+            case MotionEvent.ACTION_POINTER_UP:
+                if (newActionIndex < 0) return null;
+                sideAction = count == 1 ? MotionEvent.ACTION_UP
+                        : MotionEvent.ACTION_POINTER_UP
+                                | (newActionIndex << MotionEvent.ACTION_POINTER_INDEX_SHIFT);
+                break;
+            case MotionEvent.ACTION_MOVE:
+                sideAction = MotionEvent.ACTION_MOVE;
+                break;
+            default:
+                return null;
+        }
+
+        MotionEvent.PointerProperties[] properties = new MotionEvent.PointerProperties[count];
+        MotionEvent.PointerCoords[] coordinates = new MotionEvent.PointerCoords[count];
+        for (int i = 0; i < count; i++) {
+            properties[i] = new MotionEvent.PointerProperties();
+            source.getPointerProperties(keep[i], properties[i]);
+            coordinates[i] = new MotionEvent.PointerCoords();
+        }
+
+        final int historyCount = source.getHistorySize();
+        final boolean batched = sideAction == MotionEvent.ACTION_MOVE && historyCount > 0;
+        for (int i = 0; i < count; i++) {
+            if (batched)
+                source.getHistoricalPointerCoords(keep[i], 0, coordinates[i]);
+            else
+                source.getPointerCoords(keep[i], coordinates[i]);
+        }
+        MotionEvent result = MotionEvent.obtain(source.getDownTime(),
+                batched ? source.getHistoricalEventTime(0) : source.getEventTime(),
+                sideAction, count, properties, coordinates, source.getMetaState(),
+                source.getButtonState(), source.getXPrecision(), source.getYPrecision(),
+                source.getDeviceId(), source.getEdgeFlags(), source.getSource(),
+                source.getFlags());
+        if (batched) {
+            for (int history = 1; history < historyCount; history++) {
+                for (int i = 0; i < count; i++)
+                    source.getHistoricalPointerCoords(keep[i], history, coordinates[i]);
+                result.addBatch(source.getHistoricalEventTime(history), coordinates,
+                        source.getMetaState());
+            }
+            for (int i = 0; i < count; i++)
+                source.getPointerCoords(keep[i], coordinates[i]);
+            result.addBatch(source.getEventTime(), coordinates, source.getMetaState());
+        }
+        return result;
     }
 
     /**
