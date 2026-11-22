@@ -1,0 +1,50 @@
+name: Build kwin (Fedora 44 arm64, anland backend)
+
+# Rebuilds Fedora 44's kwin with the anland backend overlay, so the compositor
+# carries the same input semantics as the Debian build (press/hold/release with
+# the 120 ms tap window). Mirrors producers/kde/Fedora44_v5/build.sh.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - kwin-fedora
+
+jobs:
+  build-kwin-fedora:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
+    container: fedora:44
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tooling
+        run: |
+          dnf install -y sudo git rpm-build rpmdevtools dnf-plugins-core patch findutils which
+          useradd -m builder || true
+          echo 'builder ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/builder
+          chmod 440 /etc/sudoers.d/builder
+
+      - name: Stage sources
+        run: |
+          mkdir -p /home/builder/anland
+          cp -a "$GITHUB_WORKSPACE/." /home/builder/anland/
+          chown -R builder:builder /home/builder
+          ls -l /home/builder/anland/producers/kde/Fedora44_v5/ | head
+
+      - name: Build RPMs
+        run: |
+          su builder -c 'cd /home/builder/anland && WORKDIR=/home/builder/work ANLAND_INSTALL=0 bash producers/kde/Fedora44_v5/build.sh' 2>&1 | tail -200
+
+      - name: Collect
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/out"
+          find /home/builder/work -name '*.rpm' -exec cp -v {} "$GITHUB_WORKSPACE/out/" \;
+          ls -l "$GITHUB_WORKSPACE/out"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kwin-rpm
+          path: out/*.rpm
+          if-no-files-found: error
