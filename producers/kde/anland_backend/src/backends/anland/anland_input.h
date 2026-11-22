@@ -50,6 +50,9 @@ public:
     void pointerButton(quint32 button, bool pressed);
     void pointerAxis(PointerAxis axis, qreal delta, qint32 deltaV120);
     void keyboardKey(quint32 keycode, bool pressed);
+    /* Plain pass-through for a real evdev keyboard: no tap window, no deferred
+     * release -- the device already reports what the user does. */
+    void keyEvdev(quint32 keycode, bool pressed);
     void touchDown(qint32 id, const QPointF &position);
     void touchMotion(qint32 id, const QPointF &position);
     void touchUp(qint32 id);

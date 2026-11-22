@@ -233,6 +233,16 @@ void AnlandInputDevice::keyboardKey(quint32 keycode, bool pressed)
     });
 }
 
+void AnlandInputDevice::keyEvdev(quint32 keycode, bool pressed)
+{
+    // A real evdev keyboard needs no hold window and no deferred release: the
+    // device already reports exactly what the user did.
+    Q_EMIT keyChanged(keycode,
+                      pressed ? KeyboardKeyState::Pressed : KeyboardKeyState::Released,
+                      now(), this);
+}
+
+
 void AnlandInputDevice::touchDown(qint32 id, const QPointF &position)
 {
     Q_EMIT InputDevice::touchDown(id, position, now(), this);

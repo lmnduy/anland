@@ -169,6 +169,13 @@ private:
     void dispatchSceneEvents();
     void processInputEvent(const anland_device_input_t &ev);
     void releaseTabletTools();
+    /* Evdev bridge: this container has no udev, so KWin's libinput backend
+     * enumerates nothing and never opens /dev/input. Read the virtual devices
+     * here and feed the same AnlandInputDevice the daemon path drives. */
+    void attachEvdevDevices();
+    void readEvdevDevice(int fd);
+    struct EvdevDeviceState;
+    QHash<int, EvdevDeviceState *> m_evdevDevices;
     QPointF mapInputToLogical(const QPointF &devicePoint) const;
     QPointF mapInputDeltaToLogical(const QPointF &deviceDelta) const;
     void onReconnectTimer();

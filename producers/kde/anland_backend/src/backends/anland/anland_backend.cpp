@@ -36,6 +36,14 @@
 #include <QThread>
 #include <QThreadPool>
 #include <QTimer>
+#include <QDir>
+
+#include <cerrno>
+#include <cstring>
+#include <fcntl.h>
+#include <linux/input.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
 
 #include <xf86drm.h>
 
@@ -241,6 +249,10 @@ bool AnlandBackend::initialize()
     m_reconnectTimer = new QTimer(this);
     m_reconnectTimer->setInterval(s_reconnectIntervalMs);
     connect(m_reconnectTimer, &QTimer::timeout, this, &AnlandBackend::onReconnectTimer);
+
+    // Read the container's virtual evdev devices directly:
+    // without udev nothing else in KWin will (see attachEvdevDevices).
+    attachEvdevDevices();
 
     // Bring up the audio engine up front: its PipeWire sink-monitor capture and
     // virtual mic Source live for the whole session, independent of the consumer,
@@ -555,6 +567,199 @@ void AnlandBackend::onInputReadable()
     while (anland_device_poll_input(m_device, &ev, 0) > 0) {
         processInputEvent(ev);
         if (m_inFallback) break; // poll_input_event may have triggered fallback
+    }
+}
+
+/*
+ * Evdev bridge.
+ *
+ * A container without udev gives libinput nothing to enumerate, so KWin never
+ * opens /dev/input and any evdev device created inside the container is
+ * invisible to the seat. The Android side writes its input into exactly such
+ * devices (anland-uinputd creates "Anland Virtual Touchscreen/Mouse/Keyboard"),
+ * so read them here and feed the same AnlandInputDevice the display-daemon path
+ * already drives. Input then behaves like a physical keyboard/mouse from the
+ * seat downwards, with none of our own hold/tap logic in the way.
+ */
+struct AnlandBackend::EvdevDeviceState
+{
+    struct TouchSlot
+    {
+        int id = -1;
+        QPointF pos;
+        bool down = false;
+        bool up = false;
+        bool moved = false;
+    };
+
+    int fd = -1;
+    QSocketNotifier *notifier = nullptr;
+    bool touch = false;
+    bool mouse = false;
+    bool keyboard = false;
+    /* Mouse: accumulated position in device space (the device is relative). */
+    QPointF pos;
+    QPointF pendingDelta;
+    /* Touch: multitouch protocol B slots. */
+    int slot = 0;
+    QHash<int, TouchSlot> slots;
+};
+
+void AnlandBackend::attachEvdevDevices()
+{
+    QDir dir(QStringLiteral("/dev/input"));
+    const QStringList nodes = dir.entryList({QStringLiteral("event*")}, QDir::System | QDir::Files);
+    for (const QString &node : nodes) {
+        const QString path = dir.filePath(node);
+        const int fd = ::open(qPrintable(path), O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+        if (fd < 0) {
+            continue;
+        }
+        char name[256] = {};
+        if (::ioctl(fd, EVIOCGNAME(sizeof(name) - 1), name) < 0
+            || !std::strstr(name, "Anland Virtual")) {
+            ::close(fd);
+            continue;
+        }
+        auto *state = new EvdevDeviceState;
+        state->fd = fd;
+        state->touch = std::strstr(name, "Touch") != nullptr;
+        state->mouse = std::strstr(name, "Mouse") != nullptr;
+        state->keyboard = std::strstr(name, "Keyboard") != nullptr;
+        if (state->mouse && !m_outputs.isEmpty()) {
+            const QSize mode = m_outputs[0]->modeSize();
+            state->pos = QPointF(mode.width() / 2.0, mode.height() / 2.0);
+        }
+        state->notifier = new QSocketNotifier(fd, QSocketNotifier::Read, this);
+        connect(state->notifier, &QSocketNotifier::activated, this, [this, fd]() {
+            readEvdevDevice(fd);
+        });
+        m_evdevDevices.insert(fd, state);
+        qCInfo(KWIN_ANLAND) << "evdev bridge attached" << path << name;
+    }
+    if (m_evdevDevices.isEmpty()) {
+        qCInfo(KWIN_ANLAND) << "no Anland evdev devices found in /dev/input";
+    }
+}
+
+void AnlandBackend::readEvdevDevice(int fd)
+{
+    const auto it = m_evdevDevices.constFind(fd);
+    if (it == m_evdevDevices.constEnd() || !m_inputDevice) {
+        return;
+    }
+    EvdevDeviceState *state = it.value();
+
+    struct input_event events[64];
+    for (;;) {
+        const ssize_t got = ::read(fd, events, sizeof(events));
+        if (got <= 0) {
+            break;
+        }
+        const int count = int(got / ssize_t(sizeof(struct input_event)));
+        for (int i = 0; i < count; i++) {
+            const struct input_event &event = events[i];
+            switch (event.type) {
+            case EV_SYN:
+                if (event.code != SYN_REPORT) {
+                    break;
+                }
+                if (state->mouse && state->pendingDelta != QPointF()) {
+                    const QPointF delta = mapInputDeltaToLogical(state->pendingDelta);
+                    state->pos += state->pendingDelta;
+                    if (!m_outputs.isEmpty()) {
+                        const QSize mode = m_outputs[0]->modeSize();
+                        state->pos.setX(qBound(0.0, state->pos.x(), qreal(mode.width() - 1)));
+                        state->pos.setY(qBound(0.0, state->pos.y(), qreal(mode.height() - 1)));
+                    }
+                    m_inputDevice->pointerMotion(mapInputToLogical(state->pos), delta, delta);
+                    state->pendingDelta = QPointF();
+                }
+                if (state->touch) {
+                    bool any = false;
+                    for (auto slot = state->slots.begin(); slot != state->slots.end(); ++slot) {
+                        EvdevDeviceState::TouchSlot &s = slot.value();
+                        if (s.down && s.id >= 0) {
+                            m_inputDevice->touchDown(s.id, mapInputToLogical(s.pos));
+                            s.down = false;
+                            s.moved = false;
+                            any = true;
+                        } else if (s.up) {
+                            if (s.id >= 0) {
+                                m_inputDevice->touchUp(s.id);
+                            }
+                            s.id = -1;
+                            s.up = false;
+                            s.moved = false;
+                            any = true;
+                        } else if (s.moved && s.id >= 0) {
+                            m_inputDevice->touchMotion(s.id, mapInputToLogical(s.pos));
+                            s.moved = false;
+                            any = true;
+                        }
+                    }
+                    if (any) {
+                        m_inputDevice->touchFrame();
+                    }
+                }
+                break;
+            case EV_REL:
+                if (!state->mouse) {
+                    break;
+                }
+                if (event.code == REL_X) {
+                    state->pendingDelta.rx() += event.value;
+                } else if (event.code == REL_Y) {
+                    state->pendingDelta.ry() += event.value;
+                } else if (event.code == REL_WHEEL) {
+                    m_inputDevice->pointerAxis(PointerAxis::Vertical, -event.value * 60.0,
+                                               -event.value * 120);
+                } else if (event.code == REL_HWHEEL) {
+                    m_inputDevice->pointerAxis(PointerAxis::Horizontal, event.value * 60.0,
+                                               event.value * 120);
+                }
+                break;
+            case EV_KEY:
+                if (state->mouse) {
+                    if (event.code == BTN_LEFT || event.code == BTN_RIGHT
+                        || event.code == BTN_MIDDLE) {
+                        m_inputDevice->pointerButton(event.code, event.value != 0);
+                    }
+                } else if (state->keyboard) {
+                    m_inputDevice->keyEvdev(event.code, event.value != 0);
+                }
+                break;
+            case EV_ABS:
+                if (!state->touch) {
+                    break;
+                }
+                if (event.code == ABS_MT_SLOT) {
+                    state->slot = event.value;
+                } else if (event.code == ABS_MT_TRACKING_ID) {
+                    EvdevDeviceState::TouchSlot &s = state->slots[state->slot];
+                    if (event.value >= 0) {
+                        s.id = event.value;
+                        s.down = true;
+                    } else {
+                        s.up = true;
+                    }
+                } else if (event.code == ABS_MT_POSITION_X
+                           || event.code == ABS_MT_POSITION_Y) {
+                    EvdevDeviceState::TouchSlot &s = state->slots[state->slot];
+                    if (event.code == ABS_MT_POSITION_X) {
+                        s.pos.setX(event.value);
+                    } else {
+                        s.pos.setY(event.value);
+                    }
+                    if (!s.down && s.id >= 0) {
+                        s.moved = true;
+                    }
+                }
+                break;
+            default:
+                break;
+            }
+        }
     }
 }
 
