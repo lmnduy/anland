@@ -584,7 +584,7 @@ static int uinput_connect(const char *spec, const char *helper, const char *brid
 
     char bridge_in[600];
     snprintf(bridge_in, sizeof(bridge_in), "%s.in", bridge);
-    int fd = recv_fd_via_root_helper(path, helper, bridge_in);
+    int fd = recv_fd_via_root_helper(spec, helper, bridge_in);
     if (fd >= 0)
         return fd;
 
@@ -595,7 +595,7 @@ static int uinput_connect(const char *spec, const char *helper, const char *brid
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
-    snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", path);
+    snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", spec);
     if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         close(fd);
         return -1;
