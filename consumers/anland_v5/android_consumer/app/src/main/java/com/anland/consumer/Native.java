@@ -33,15 +33,29 @@ public final class Native {
     // ---- instance API (delegates to the handle-taking natives) ----
 
     public void configure(String socketPath, boolean useRoot, String helperPath, String bridgePath) {
-        nativeConfigure(handle, socketPath, useRoot, helperPath, bridgePath, false, null, 1, null);
+        nativeConfigure(handle, socketPath, useRoot, helperPath, bridgePath, false, null, 1, null, null);
     }
 
     /** Full configure, including the foreground-scheduling (top-app) helper. */
     public void configure(String socketPath, boolean useRoot, String helperPath, String bridgePath,
                           boolean topAppEnable, String topAppPath, int topAppMode,
                           String topAppStops) {
+        configure(socketPath, useRoot, helperPath, bridgePath, topAppEnable, topAppPath,
+                topAppMode, topAppStops, null);
+    }
+
+    /**
+     * Full configure with an optional uinput bridge socket. When {@code
+     * inputSocketPath} is non-empty the input events are written there (a tiny
+     * daemon in the container turns them into a real evdev device) instead of
+     * into the producer's own input channel; an unreachable bridge falls back to
+     * the legacy channel, so a missing daemon never loses input.
+     */
+    public void configure(String socketPath, boolean useRoot, String helperPath, String bridgePath,
+                          boolean topAppEnable, String topAppPath, int topAppMode,
+                          String topAppStops, String inputSocketPath) {
         nativeConfigure(handle, socketPath, useRoot, helperPath, bridgePath,
-                        topAppEnable, topAppPath, topAppMode, topAppStops);
+                        topAppEnable, topAppPath, topAppMode, topAppStops, inputSocketPath);
     }
     public void start(Surface surface, Object clipboardTarget, Object activityTarget) { nativeStart(handle, surface, clipboardTarget, activityTarget); }
     public void stop() { nativeStop(handle); }
@@ -77,7 +91,8 @@ public final class Native {
     private static native void nativeConfigure(long handle, String socketPath, boolean useRoot,
                                                String helperPath, String bridgePath,
                                                boolean topAppEnable, String topAppPath,
-                                               int topAppMode, String topAppStops);
+                                               int topAppMode, String topAppStops,
+                                               String inputSocketPath);
 
     // With static natives there is no `thiz`, so native is handed the object it
     // calls back into (the Clipboard hosting nativeSetClipboardText /

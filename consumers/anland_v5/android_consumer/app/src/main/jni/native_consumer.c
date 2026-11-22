@@ -102,6 +102,13 @@ struct consumer_state {
     bool cfg_use_root;
     char cfg_helper_path[512];
     char cfg_bridge_path[512];
+    /* Optional uinput bridge socket. When set, input events are written there as
+     * one text line per event and KWin sees a real evdev device; the producer's
+     * own input channel then stays untouched. Empty = legacy channel. */
+    char cfg_input_socket[256];
+    /* Connected fd for cfg_input_socket, -1 until the first event needs it.
+     * Written from the Java UI thread only (all send* entry points). */
+    int input_fd;
     int  cfg_custom_width;
     int  cfg_custom_height;
     /* SurfaceHolder dimensions avoid stale ANativeWindow geometry after rotation. */
@@ -152,8 +159,14 @@ struct consumer_state {
 static void topapp_handle_scheduling_event(struct consumer_state *s,
                                            const struct OutputEvent *event);
 
+/* Defined after the root helper: true when the event was written to the uinput
+ * bridge (so the legacy channel must not also see it). */
+static bool uinput_send(struct consumer_state *s, const struct InputEvent *event);
+
 static int send_input_event(struct consumer_state *s, const struct InputEvent *event)
 {
+    if (uinput_send(s, event))
+        return 0;
     pthread_mutex_lock(&s->input_lock);
     int rc = s->ctx ? push_input_event(s->ctx, event) : 0;
     pthread_mutex_unlock(&s->input_lock);
@@ -523,6 +536,128 @@ static int recv_fd_via_root_helper(const char *daemon_sock,
     if (fd < 0)
         LOGE("root helper: did not receive daemon fd (su status=%d)", status);
     return fd;
+}
+
+/*
+ * Optional uinput bridge.
+ *
+ * The app's own protocol carries input to the producer, where a custom device
+ * feeds KWin. That device has its own timing rules (hold windows, tap
+ * detection) and lives inside the display session, so anything that goes wrong
+ * in either place shows up as "the game stopped reacting". Writing the same
+ * events to a unix socket that a small daemon in the container turns into a
+ * real evdev device through /dev/uinput keeps KWin's input path stock: it is
+ * the same code path a physical keyboard or mouse takes.
+ *
+ * Protocol: one ASCII line per event, same vocabulary as anland-ev.
+ * Returns true when the event was written (the legacy channel must then stay
+ * silent, otherwise the producer would inject it a second time).
+ */
+static int uinput_connect(const char *path, const char *helper, const char *bridge)
+{
+    if (path[0] == '\0')
+        return -1;
+
+    char bridge_in[600];
+    snprintf(bridge_in, sizeof(bridge_in), "%s.in", bridge);
+    int fd = recv_fd_via_root_helper(path, helper, bridge_in);
+    if (fd >= 0)
+        return fd;
+
+    /* Reachable without root (e.g. a 0666 socket in a shared directory). */
+    fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0)
+        return -1;
+    struct sockaddr_un addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sun_family = AF_UNIX;
+    snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", path);
+    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+static bool uinput_send(struct consumer_state *s, const struct InputEvent *event)
+{
+    if (!s || !event)
+        return false;
+
+    char path[sizeof(s->cfg_input_socket)];
+    pthread_mutex_lock(&s->cfg_lock);
+    memcpy(path, s->cfg_input_socket, sizeof(path));
+    pthread_mutex_unlock(&s->cfg_lock);
+    if (path[0] == '\0')
+        return false;
+
+    char line[128];
+    switch (event->type) {
+    case INPUT_TYPE_TOUCH: {
+        int id = event->touch.pointer_id;
+        int x = (int)(event->touch.x + (event->touch.x >= 0 ? 0.5f : -0.5f));
+        int y = (int)(event->touch.y + (event->touch.y >= 0 ? 0.5f : -0.5f));
+        if (event->touch.action == INPUT_ACTION_DOWN)
+            snprintf(line, sizeof(line), "T %d %d %d\n", id, x, y);
+        else if (event->touch.action == INPUT_ACTION_UP)
+            snprintf(line, sizeof(line), "u %d\n", id);
+        else
+            snprintf(line, sizeof(line), "t %d %d %d\n", id, x, y);
+        break;
+    }
+    case INPUT_TYPE_TOUCH_FRAME:
+        snprintf(line, sizeof(line), "F\n");
+        break;
+    case INPUT_TYPE_KEY:
+        snprintf(line, sizeof(line), "k %d %d\n", event->key.keycode,
+                 event->key.action == INPUT_ACTION_DOWN ? 1 : 0);
+        break;
+    case INPUT_TYPE_POINTER_BUTTON:
+        snprintf(line, sizeof(line), "b %u %d\n", (unsigned)event->pointer_button.button,
+                 event->pointer_button.pressed ? 1 : 0);
+        break;
+    case INPUT_TYPE_POINTER_AXIS:
+        snprintf(line, sizeof(line), "w %d\n", (int)event->pointer_axis.value);
+        break;
+    case INPUT_TYPE_POINTER_MOTION:
+        snprintf(line, sizeof(line), "p %d %d\n",
+                 (int)(event->pointer_motion.dx >= 0 ? event->pointer_motion.dx + 0.5f
+                                                     : event->pointer_motion.dx - 0.5f),
+                 (int)(event->pointer_motion.dy >= 0 ? event->pointer_motion.dy + 0.5f
+                                                     : event->pointer_motion.dy - 0.5f));
+        break;
+    default:
+        return false;   /* tablet / text / clipboard / refresh: legacy only */
+    }
+
+    if (s->input_fd < 0) {
+        char helper[sizeof(s->cfg_helper_path)];
+        char bridge[sizeof(s->cfg_bridge_path)];
+        pthread_mutex_lock(&s->cfg_lock);
+        memcpy(helper, s->cfg_helper_path, sizeof(helper));
+        memcpy(bridge, s->cfg_bridge_path, sizeof(bridge));
+        pthread_mutex_unlock(&s->cfg_lock);
+        int fd = uinput_connect(path, helper, bridge);
+        if (fd < 0) {
+            /* Bridge not reachable (daemon down, no root): keep working through
+             * the producer's own channel instead of losing input. */
+            return false;
+        }
+        s->input_fd = fd;
+        LOGI("uinput bridge connected: %s", path);
+    }
+
+    ssize_t written = write(s->input_fd, line, strlen(line));
+    if (written < 0) {
+        int saved = errno;
+        if (saved == EPIPE || saved == ECONNRESET || saved == ENOTCONN) {
+            close(s->input_fd);
+            s->input_fd = -1;
+            LOGI("uinput bridge lost: %s", strerror(saved));
+        }
+        return false;
+    }
+    return true;
 }
 
 /*
@@ -1093,6 +1228,7 @@ Java_com_anland_consumer_Native_nativeCreate(JNIEnv *env, jclass clazz)
     pthread_mutex_init(&s->cfg_lock, NULL);
     pthread_mutex_init(&s->topapp_lock, NULL);
     s->cfg_topapp_mode = 1;
+    s->input_fd = -1;
     strncpy(s->cfg_socket_path, "/data/local/tmp/display_daemon.sock",
             sizeof(s->cfg_socket_path) - 1);
     s->audio = audio_create();
@@ -1176,7 +1312,7 @@ JNIEXPORT void JNICALL
 Java_com_anland_consumer_Native_nativeConfigure(
     JNIEnv *env, jclass clazz, jlong handle, jstring socketPath, jboolean useRoot,
     jstring helperPath, jstring bridgePath, jboolean topappEnable, jstring topappPath,
-    jint topappMode, jstring topappStops)
+    jint topappMode, jstring topappStops, jstring inputSocketPath)
 {
     struct consumer_state *s = STATE(handle);
     if (!s)
@@ -1189,6 +1325,18 @@ Java_com_anland_consumer_Native_nativeConfigure(
     s->cfg_use_root = (useRoot == JNI_TRUE);
     copy_jstring(env, helperPath, s->cfg_helper_path, sizeof(s->cfg_helper_path));
     copy_jstring(env, bridgePath, s->cfg_bridge_path, sizeof(s->cfg_bridge_path));
+    {
+        char input_path[sizeof(s->cfg_input_socket)];
+        copy_jstring(env, inputSocketPath, input_path, sizeof(input_path));
+        /* A changed path invalidates the open bridge fd: reconnect lazily. */
+        if (strcmp(input_path, s->cfg_input_socket) != 0) {
+            if (s->input_fd >= 0) {
+                close(s->input_fd);
+                s->input_fd = -1;
+            }
+            memcpy(s->cfg_input_socket, input_path, sizeof(s->cfg_input_socket));
+        }
+    }
     s->cfg_topapp_enable = (topappEnable == JNI_TRUE);
     copy_jstring(env, topappPath, s->cfg_topapp_path, sizeof(s->cfg_topapp_path));
     s->cfg_topapp_mode = topappMode == 2 ? 2 : 1;
@@ -1201,8 +1349,9 @@ Java_com_anland_consumer_Native_nativeConfigure(
         }
     }
     pthread_mutex_unlock(&s->cfg_lock);
-    LOGI("configured: socket=%s root=%d helper=%s bridge=%s topapp=%d mode=%d stops=%s",
+    LOGI("configured: socket=%s root=%d helper=%s bridge=%s input=%s topapp=%d mode=%d stops=%s",
          s->cfg_socket_path, s->cfg_use_root, s->cfg_helper_path, s->cfg_bridge_path,
+         s->cfg_input_socket[0] ? s->cfg_input_socket : "(legacy)",
          s->cfg_topapp_enable, s->cfg_topapp_mode, s->cfg_topapp_stops);
 }
 
@@ -1428,21 +1577,15 @@ JNIEXPORT void JNICALL
 Java_com_anland_consumer_Native_nativeSendMouseMotion(
     JNIEnv *env, jclass clazz, jlong handle, jfloat x, jfloat y, jfloat dx, jfloat dy)
 {
+    (void)env; (void)clazz;
     struct consumer_state *s = STATE(handle);
     if (!s)
         return;
-
-    pthread_mutex_lock(&s->input_lock);
-    if (!s->ctx) {
-        pthread_mutex_unlock(&s->input_lock);
-        return;
-    }
 
     if (dx == 0.0f && dy == 0.0f && s->motion_has_last) {
         dx = x - s->motion_last_x;
         dy = y - s->motion_last_y;
     }
-
     s->motion_last_x = x;
     s->motion_last_y = y;
     s->motion_has_last = true;
@@ -1451,7 +1594,15 @@ Java_com_anland_consumer_Native_nativeSendMouseMotion(
         .type = INPUT_TYPE_POINTER_MOTION,
         .pointer_motion = { .x = x, .y = y, .dx = dx, .dy = dy },
     };
-    push_input_event(s->ctx, &ev);
+    /* uinput_send() takes cfg_lock; it must never run while input_lock is held
+     * (send_input_event takes cfg_lock first, so the order has to stay
+     * cfg_lock -> input_lock everywhere). */
+    if (uinput_send(s, &ev))
+        return;
+
+    pthread_mutex_lock(&s->input_lock);
+    if (s->ctx)
+        push_input_event(s->ctx, &ev);
     pthread_mutex_unlock(&s->input_lock);
 }
 

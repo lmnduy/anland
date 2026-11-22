@@ -83,6 +83,11 @@ public class MainActivity extends Activity
     // this guards that one-time init (see applyCameraState).
     private boolean cameraInited = false;
     private static final String DEFAULT_SOCKET_PATH = "/data/local/tmp/display_daemon.sock";
+    // Optional uinput bridge socket (see the native uinput_send): the daemon in
+    // the container listens on the one directory the container and Android
+    // share. Empty disables it and keeps the producer's own input channel.
+    static final String KEY_INPUT_SOCKET = "input_socket";
+    static final String DEFAULT_INPUT_SOCKET = "/data/local/Droidspaces/Logs/anland-input.sock";
     // Multi-instance launch parameters. A secondary window is started with these
     // Intent extras (see SecondaryActivity / SettingsActivity); the launcher icon
     // starts MainActivity with none, i.e. the default socket and window name "anland".
@@ -413,8 +418,13 @@ public class MainActivity extends Activity
             topAppMode = 1;
         String topAppStops = prefs.getString(KEY_TOPAPP_STOPS, "").trim();
         String topAppPath = getApplicationInfo().nativeLibraryDir + "/libsettopapp.so";
+        // Optional uinput bridge: a daemon inside the container turns these
+        // lines into a real evdev device, so KWin's input path stays stock.
+        String inputSocket = prefs.getString(KEY_INPUT_SOCKET, DEFAULT_INPUT_SOCKET);
+        if (inputSocket == null) inputSocket = "";
+        inputSocket = inputSocket.trim();
         mNative.configure(sock, useRoot, helperPath, bridgePath, topApp, topAppPath,
-                topAppMode, topAppStops);
+                topAppMode, topAppStops, inputSocket);
         int customW = prefs.getInt("custom_width", 0);
         int customH = prefs.getInt("custom_height", 0);
         customScreenWidth = prefs.getInt("custom_width", 0);
