@@ -175,6 +175,28 @@ public class MainActivity extends Activity
 
     public static MainActivity sInstance;
 
+    // ===== TEMP-DEBUG (input freeze hunt) =====
+    // Counters + a heartbeat so a freeze can be read off logcat without touching
+    // the phone: if touch/move keep counting while the game ignores them, the
+    // break is below this process; if they stop, it is above it.
+    private long dbgTouches, dbgMoves, dbgKeys, dbgButtons, dbgFwd, dbgFrames;
+    private long dbgLastTouches, dbgLastMoves;
+    private final Runnable dbgHeartbeat = new Runnable() {
+        @Override public void run() {
+            Log.i("AnlandHB", "touch=" + dbgTouches + " (" + (dbgTouches - dbgLastTouches)
+                    + ") move=" + dbgMoves + " (" + (dbgMoves - dbgLastMoves) + ")"
+                    + " key=" + dbgKeys + " btn=" + dbgButtons + " fwd=" + dbgFwd
+                    + " surf=" + viewWidth + "x" + viewHeight
+                    + " conn=" + connectedW + "x" + connectedH
+                    + " ready=" + surfaceReady + " focus=" + hasWindowFocus()
+                    + " tp=" + isTouchpadMode + " ctl=" + hudControlPointers.size());
+            dbgLastTouches = dbgTouches;
+            dbgLastMoves = dbgMoves;
+            lifecycleHandler.postDelayed(this, 5000);
+        }
+    };
+    // ===== end TEMP-DEBUG =====
+
     // ADDED: VirtualKeyboardView instance
     private VirtualKeyboardView virtualKeyboardView;
 
@@ -329,6 +351,8 @@ public class MainActivity extends Activity
     @Override
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
+        // TEMP-DEBUG (input freeze hunt)
+        Log.i("AnlandIn", "windowFocus=" + hasFocus + " surf=" + viewWidth + "x" + viewHeight);
         if (hasFocus) {
             lifecycleHandler.removeCallbacks(delayedFocusStop);
             scheduleAutomaticImmersiveEntry();
@@ -466,6 +490,10 @@ public class MainActivity extends Activity
         if (!surfaceReady || mNative == null || surface == null || !surface.isValid())
             return;
         long now = android.os.SystemClock.uptimeMillis();
+        // TEMP-DEBUG (input freeze hunt)
+        Log.i("AnlandIn", "reconnectNow view=" + viewWidth + "x" + viewHeight
+                + " conn=" + connectedW + "x" + connectedH
+                + " sinceLast=" + (now - lastReconnectTimeMs));
         if (viewWidth == connectedW && viewHeight == connectedH
                 && now - lastReconnectTimeMs < RECONNECT_COOLDOWN_MS)
             return;
@@ -863,6 +891,15 @@ public class MainActivity extends Activity
                 final int pointerId = event.getPointerId(index);
                 final boolean down = action == MotionEvent.ACTION_DOWN
                         || action == MotionEvent.ACTION_POINTER_DOWN;
+                // TEMP-DEBUG (input freeze hunt)
+                dbgTouches++;
+                if (down || action == MotionEvent.ACTION_UP
+                        || action == MotionEvent.ACTION_POINTER_UP)
+                    Log.i("AnlandIn", "act=" + action + " id=" + pointerId
+                            + " xy=" + Math.round(event.getX(index)) + ","
+                            + Math.round(event.getY(index))
+                            + " n=" + event.getPointerCount()
+                            + " ctl=" + hudControlPointers.size());
                 if (down) {
                     if (!isTabletTool(event.getToolType(index))
                             && isOverlayControlAt(event.getX(index), event.getY(index)))
@@ -958,6 +995,8 @@ public class MainActivity extends Activity
         root.addView(systemIme.getInputView(), new FrameLayout.LayoutParams(1, 1));
 
         mRoot = root;
+        // TEMP-DEBUG (input freeze hunt): start the 5 s heartbeat.
+        lifecycleHandler.post(dbgHeartbeat);
         mDensity = getResources().getDisplayMetrics().density;
         mKeyboardFloating = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
             .getBoolean(KEY_KEYBOARD_FLOATING, false);
@@ -1920,6 +1959,8 @@ public class MainActivity extends Activity
         if (!Float.isFinite(dx) || !Float.isFinite(dy)
                 || (dx == 0f && dy == 0f))
             return;
+        // TEMP-DEBUG (input freeze hunt)
+        dbgMoves++;
         ensurePointerPosition();
         int width = pointerViewWidth();
         int height = pointerViewHeight();
@@ -2974,12 +3015,16 @@ public class MainActivity extends Activity
 
     @Override
     public void sendKey(int action, int evdev) {
+        // TEMP-DEBUG (input freeze hunt): counts keys the HUD actually emitted.
+        dbgKeys++;
         if (mNative != null)
             mNative.sendKey(action, evdev);
     }
 
     @Override
     public void sendMouseButton(int button, boolean pressed) {
+        // TEMP-DEBUG (input freeze hunt)
+        dbgButtons++;
         if (mNative != null)
             mNative.sendMouseButton(button, pressed);
     }
@@ -3734,6 +3779,8 @@ public class MainActivity extends Activity
         int action = event.getActionMasked();
         int pointerIdx = event.getActionIndex();
         int pointerId = event.getPointerId(pointerIdx);
+        // TEMP-DEBUG (input freeze hunt): direct-touch frames reaching the wire.
+        dbgFwd++;
     
         switch (action) {
             case MotionEvent.ACTION_DOWN:
